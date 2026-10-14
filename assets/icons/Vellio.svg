@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-labelledby="title">
+  <title id="title">Vellio — orange-billed pelican</title>
+  <rect x="16" y="16" width="224" height="224" rx="50" fill="#516D86"/>
+  <g transform="translate(-6 -4)" fill-rule="evenodd">
+    <path fill="#FFF8E8" d="M98 54 C76 54 60 72 60 94 C60 116 76 132 76 154 V194 C76 206 86 212 100 212 H136 C118 196 110 176 110 152 V124 C122 117 130 107 130 94 C130 71 119 54 98 54 Z M107 84 A7 7 0 1 1 93 84 A7 7 0 1 1 107 84 Z"/>
+    <path fill="#FF853D" d="M116 92 H224 L228 100 L184 134 Q162 156 138 146 L116 124 Z M132 102 H214 L193.22 114 H132 Z"/>
+  </g>
+</svg>

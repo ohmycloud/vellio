@@ -1,0 +1,49 @@
+[package]
+name = "easyread-gpui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }
+tempfile = "3"
+pdfium-render = { version = "=0.9.4", default-features = false, features = ["pdfium_7881", "thread_safe", "image_025"] }
+image = { version = "0.25", default-features = false, features = ["png", "webp", "jpeg", "gif"] }
+zip = { version = "3.0", default-features = false, features = ["deflate"] }
+roxmltree = "0.21"
+percent-encoding = "2"
+entities = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+typst = "=0.15.1"
+typst-layout = "=0.15.1"
+typst-svg = "=0.15.1"
+ttf-parser = "=0.25.1"
+typst-assets = { version = "=0.15.1", features = ["fonts"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+markdown = "=1.0.0"
+gpui-kit = { version = "=0.6.6", optional = true }
+syntect = { version = "5.3", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy"], optional = true }
+
+[features]
+default = []
+desktop = ["dep:gpui-kit", "dep:syntect", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation", "dep:gpui-macos"]
+desktop-ui-tests = ["desktop", "gpui-kit/test-support"]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Match EasyRead's grayscale antialiasing without CoreGraphics stroke thickening.
+gpui-macos = { package = "gpui-pre-macos", version = "=0.3.6", default-features = false, features = ["web-font-smoothing"], optional = true }
+objc2 = { version = "0.6", optional = true }
+objc2-app-kit = { version = "0.3", optional = true, default-features = false, features = ["std", "NSApplication", "NSImage", "NSResponder"] }
+objc2-foundation = { version = "0.3", optional = true, default-features = false, features = ["std", "NSData"] }
+
+[profile.dev]
+debug = 0
+
+[patch.crates-io]
+# Keep underline decoration colors through the native rich-text renderer.
+gpui-base = { path = "vendor/gpui-base" }
+gpui-pre-macos = { path = "vendor/gpui-pre-macos" }

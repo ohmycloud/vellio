@@ -1,0 +1,32 @@
+# Rust build outputs (root and vendored crates)
+target/
+**/target/
+
+# Python/tool caches
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+
+# OS/editor noise
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Local environment/config
+.env
+.env.*
+!.env.example
+
+# Generated logs
+*.log
+
+# Local evidence, drafts, fixtures, and helper material not committed by default
+evidence/
+assets/branding/
+report.md
+fixtures/
+examples/
+docs/
+scripts/
