@@ -150,6 +150,200 @@ fn ask_ai_slides_from_right_and_uses_easyread_column_widths(cx: &mut TestAppCont
 }
 
 #[gpui_kit::test]
+fn stored_chat_display_and_inline_math_paint_as_native_paths(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let display =
+        r"\text{Attention}(Q,K,V)=\text{softmax}\!\left(\frac{QK^{\top}}{\sqrt{d_k}}\right)V";
+    let inline = r"\sqrt{d_{837}}";
+    let body = format!(
+        "原文写成矩阵形式：\n$${display}$$\n每个分数除以 \\({inline}\\)。\n\n代码 `$$example$$` 应保留。"
+    );
+    let mut raw = fixture();
+    raw["chat"]["threads"] = json!([{"id":"math-thread","messages":[{"id":"math-answer","role":"assistant","content":body,"status":"done"}]}]);
+    let mut reader = None;
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| ReaderView::new(raw, None, None, window, cx));
+        reader = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    let reader = reader.unwrap();
+    cx.simulate_resize(size(px(1300.), px(900.)));
+    cx.update(|window, cx| {
+        reader.update(cx, |reader, cx| reader.show_panel(Panel::Chat, window, cx))
+    });
+    finish_slide(cx);
+    for _ in 0..150 {
+        std::thread::sleep(Duration::from_millis(5));
+        settle(cx);
+        if easyread_gpui::formula::cached_layout(display, true).is_some()
+            && easyread_gpui::formula::cached_layout(inline, false).is_some()
+            && cx.debug_bounds("reader-native-typst-math").is_some()
+        {
+            break;
+        }
+    }
+    assert!(easyread_gpui::formula::cached_layout(display, true).is_some());
+    assert!(easyread_gpui::formula::cached_layout(inline, false).is_some());
+    let bounds = cx
+        .debug_bounds("reader-native-typst-math")
+        .expect("AI math must paint vector paths, not literal TeX");
+    assert!(bounds.size.width <= cx.debug_bounds("chat-panel").unwrap().size.width - px(60.));
+    reader.read_with(cx, |reader, _| {
+        assert_eq!(
+            reader.raw["chat"]["threads"][0]["messages"][0]["content"],
+            body
+        )
+    });
+}
+
+#[gpui_kit::test]
+fn streamed_display_math_waits_for_closing_delimiter_then_renders(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let tex = "x^{947}+y^{947}";
+    let mut reader = None;
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| ReaderView::new(fixture(), None, None, window, cx));
+        reader = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    let reader = reader.unwrap();
+    cx.update(|window, cx| {
+        reader.update(cx, |reader, cx| {
+            reader.live_question = "解释此公式".into();
+            reader.live = format!("矩阵：\n$${tex}");
+            reader.show_panel(Panel::Chat, window, cx);
+        })
+    });
+    finish_slide(cx);
+    assert!(easyread_gpui::formula::cached_layout(tex, true).is_none());
+    assert!(cx.debug_bounds("reader-native-typst-math").is_none());
+    reader.update(cx, |reader, cx| {
+        reader.live = format!("矩阵：\n$${tex}$$\n后文仍在。");
+        cx.notify();
+    });
+    for _ in 0..150 {
+        std::thread::sleep(Duration::from_millis(5));
+        settle(cx);
+        if cx.debug_bounds("reader-native-typst-math").is_some() {
+            break;
+        }
+    }
+    assert!(easyread_gpui::formula::cached_layout(tex, true).is_some());
+    assert!(cx.debug_bounds("reader-native-typst-math").is_some());
+    reader.read_with(cx, |reader, _| {
+        assert_eq!(
+            reader.raw["chat"]["threads"],
+            json!([]),
+            "rendering live math must not rewrite stored chat"
+        )
+    });
+}
+
+#[gpui_kit::test]
+fn pinned_ai_reply_uses_the_same_native_math_renderer(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let tex = r"\frac{a_{579}}{b_{579}}";
+    let body = format!("解答：\\[{tex}\\]。");
+    let mut raw = fixture();
+    raw["discussion"]["entries"] = json!([{"id":"math-reply","reply_to":"note","anchor":"paragraph","body":body,"by":"test-model","live":true}]);
+    let mut reader = None;
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| ReaderView::new(raw, None, None, window, cx));
+        reader = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    let reader = reader.unwrap();
+    cx.update(|window, cx| {
+        reader.update(cx, |reader, cx| reader.show_panel(Panel::Notes, window, cx))
+    });
+    for _ in 0..150 {
+        std::thread::sleep(Duration::from_millis(5));
+        settle(cx);
+        if cx.debug_bounds("reader-native-typst-math").is_some() {
+            break;
+        }
+    }
+    assert!(easyread_gpui::formula::cached_layout(tex, true).is_some());
+    assert!(cx.debug_bounds("annotation-ai-reply").is_some());
+    assert!(cx.debug_bounds("reader-native-typst-math").is_some());
+    reader.read_with(cx, |reader, _| {
+        assert_eq!(reader.raw["discussion"]["entries"][0]["body"], body)
+    });
+}
+
+fn check_annotation_math(cx: &mut TestAppContext, drawer: bool) {
+    cx.update(gpui_kit::init);
+    for kind in ["note", "question"] {
+        for in_quote in [true, false] {
+            let tex = if in_quote {
+                r"\frac{1}{\sqrt{d_{k}}}"
+            } else {
+                r"\frac{QK^{\top}}{\sqrt{d_k}}"
+            };
+            let mut raw = fixture();
+            raw["reader"]["notes"]["note"]["kind"] = json!(kind);
+            raw["reader"]["notes"]["note"]["quote"] = json!(if in_quote {
+                format!("${tex}$")
+            } else {
+                "A second paragraph with an explanation and a question.".into()
+            });
+            raw["reader"]["notes"]["note"]["body"] = json!(if in_quote {
+                "笔记中的公式应正确渲染。".into()
+            } else {
+                format!("**公式**：\n$${tex}$$\n代码 `$not_math$` 应保持原样。")
+            });
+            let saved_note = raw["reader"]["notes"]["note"].clone();
+            let mut reader = None;
+            let (_, cx) = cx.add_window_view(|window, cx| {
+                let view = cx.new(|cx| {
+                    let mut reader = ReaderView::new(raw, None, None, window, cx);
+                    reader.panel = Panel::Notes;
+                    reader.panel_open = drawer;
+                    reader
+                });
+                reader = Some(view.clone());
+                Root::new(view, window, cx)
+            });
+            let reader = reader.unwrap();
+            for _ in 0..150 {
+                std::thread::sleep(Duration::from_millis(5));
+                settle(cx);
+                if cx.debug_bounds("reader-native-typst-math").is_some() {
+                    break;
+                }
+            }
+            let math = cx
+                .debug_bounds("reader-native-typst-math")
+                .expect("saved notes and questions must paint native math");
+            let container = cx
+                .debug_bounds(if in_quote {
+                    "annotation-card-quote"
+                } else {
+                    "annotation-card-body"
+                })
+                .unwrap();
+            assert!(container.contains(&math.center()));
+            assert!(math.size.width > px(0.) && math.size.width <= container.size.width);
+            assert!(easyread_gpui::formula::cached_layout(tex, !in_quote).is_some());
+            assert!(easyread_gpui::formula::cached_layout("not_math", false).is_none());
+            reader.read_with(cx, |reader, _| {
+                assert_eq!(reader.raw["reader"]["notes"]["note"], saved_note);
+            });
+        }
+    }
+}
+
+#[gpui_kit::test]
+fn margin_notes_and_questions_render_quote_and_body_math(cx: &mut TestAppContext) {
+    check_annotation_math(cx, false);
+}
+
+#[gpui_kit::test]
+fn drawer_notes_and_questions_render_quote_and_body_math(cx: &mut TestAppContext) {
+    check_annotation_math(cx, true);
+}
+
+#[gpui_kit::test]
 fn chat_references_are_deduplicated_removable_and_do_not_pollute_the_draft(
     cx: &mut TestAppContext,
 ) {

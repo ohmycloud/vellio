@@ -742,7 +742,7 @@ impl ReaderView {
             })
             .when(count > 0, |d| {
                 d.child(
-                    list(self.chat_list.clone(), move |index, _, cx| {
+                    list(self.chat_list.clone(), move |index, window, cx| {
                         let message = &messages[index];
                         let user = message["role"] == "user";
                         let body = message["content"].as_str().unwrap_or("").to_owned();
@@ -758,6 +758,13 @@ impl ReaderView {
                         let refs = message["refs"].as_array().cloned().unwrap_or_else(|| {
                             if message["anchor"].is_string() { vec![message.clone()] } else { vec![] }
                         });
+                        let rendered_body = if body.is_empty() && error { "没能回答，请重试。" }
+                            else if body.is_empty() { "思考中…" } else { &body };
+                        let rich_text = weak.upgrade().map(|reader| reader.update(cx, |reader, cx| {
+                            let width=reader.chat_panel_width(f32::from(window.viewport_size().width));
+                            let width=if user { (width-36.)*0.88-28. } else { width-65. };
+                            reader.rich_markdown(format!("chat-{}-{index}",reader.tid),rendered_body,width.max(32.),cx)
+                        })).unwrap_or_else(|| gpui_kit::base::TextView::markdown(("chat-fallback",index),rendered_body.to_owned()));
                         let reference_buttons = refs.into_iter().enumerate().map(|(r_index, reference)| {
                             let label = weak.upgrade().map(|reader| reader.read(cx).chat_reference_label(&ChatReference {
                                 anchor: reference["anchor"].as_str().unwrap_or("").to_owned(),
@@ -793,10 +800,7 @@ impl ReaderView {
                                                 .px(px(13.))
                                                 .py(px(9.))
                                                 .child(
-                                                    TextView::markdown(
-                                                        ("chat-user", index),
-                                                        body.clone(),
-                                                    )
+                                                    rich_text.clone()
                                                     .selectable(true)
                                                     .text_size(px(14.))
                                                     .line_height(relative(1.7)),
@@ -833,16 +837,7 @@ impl ReaderView {
                                                 .pl(px(29.))
                                                 .when(error, |d| d.text_color(rgb(0xa34f21)))
                                                 .child(
-                                                    TextView::markdown(
-                                                        ("chat-ai", index),
-                                                        if body.is_empty() && error {
-                                                            "没能回答，请重试。".to_owned()
-                                                        } else if body.is_empty() {
-                                                            "思考中…".to_owned()
-                                                        } else {
-                                                            body.clone()
-                                                        },
-                                                    )
+                                                    rich_text.clone()
                                                     .selectable(true)
                                                     .font_family(serif.clone())
                                                     .text_size(px(15.))

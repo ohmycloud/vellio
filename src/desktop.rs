@@ -296,6 +296,7 @@ struct ReaderView {
     fonts: typography::Fonts,
     formulas: HashMap<String, Result<Arc<formula::FormulaLayout>, String>>,
     inline_formulas: HashMap<String, Result<Arc<formula::FormulaLayout>, String>>,
+    rich_markdown_cache: std::cell::RefCell<math::MarkdownCache>,
     list: ListState,
     chat_list: ListState,
     chat_following: bool,
@@ -570,6 +571,7 @@ impl ReaderView {
             fonts,
             formulas: HashMap::new(),
             inline_formulas: HashMap::new(),
+            rich_markdown_cache: Default::default(),
             list,
             chat_list,
             chat_following: true,
@@ -847,6 +849,7 @@ impl ReaderView {
                                         .unwrap_or(0);
                                     view.formulas.clear();
                                     view.inline_formulas.clear();
+                                    view.rich_markdown_cache.get_mut().clear();
                                     view.apply_state(raw);
                                     let (index, offset) = view.restored_position();
                                     view.panel = Self::restored_panel(view.session.as_ref());
@@ -1765,9 +1768,13 @@ impl ReaderView {
             }
             if b.kind != "math" {
                 let text = self.state.markdown(b, true);
-                for (_, tex) in formula::inline_math(&text) {
-                    if !self.inline_formulas.contains_key(tex) {
-                        inline.insert(tex.to_owned());
+                for math in formula::math_spans(&text) {
+                    if math.display {
+                        if !self.formulas.contains_key(&math.tex) {
+                            display.insert(math.tex);
+                        }
+                    } else if !self.inline_formulas.contains_key(&math.tex) {
+                        inline.insert(math.tex);
                     }
                 }
             }
@@ -4160,15 +4167,7 @@ impl ReaderView {
                 if position == 0 {
                     content = content.child(text);
                 } else {
-                    content = content.child(
-                        div()
-                            .when(!self.reader_figure_caption(index), |d| {
-                                d.border_l_2().border_color(rgb(0xd3cabb)).pl_3()
-                            })
-                            .mt_2()
-                            .text_color(rgb(0x77716a))
-                            .child(text),
-                    );
+                    content = content.child(div().mt_2().text_color(rgb(0x77716a)).child(text));
                 }
             }
         }
@@ -5507,7 +5506,7 @@ impl ReaderView {
                     .child(format!("AI · {}", entry["by"].as_str().unwrap_or("AI"))),
             )
             .child(
-                TextView::markdown(SharedString::from(format!("reply-body-{id}")), body)
+                self.rich_markdown(format!("reply-body-{id}"), &body, 240., cx)
                     .selectable(true)
                     .text_size(px(13.5))
                     .line_height(relative(1.72)),
@@ -5671,6 +5670,7 @@ impl ReaderView {
                     .when(!quote.is_empty(), |d| {
                         d.child(
                             div()
+                                .debug_selector(|| "annotation-card-quote".into())
                                 .relative()
                                 .w_full()
                                 .text_size(px(13.))
@@ -5683,7 +5683,20 @@ impl ReaderView {
                                 .when(drawer, |d| {
                                     d.child(self.annotation_jump_bar(note, true, cx))
                                 })
-                                .child(format!("“{quote}”")),
+                                .child(
+                                    self.rich_markdown(
+                                        format!("annotation-quote-{id}"),
+                                        &quote,
+                                        240.,
+                                        cx,
+                                    )
+                                    .selectable(true)
+                                    .w_full()
+                                    .text_size(px(13.))
+                                    .font_family(self.fonts.serif_en.clone())
+                                    .line_height(relative(1.6))
+                                    .text_color(rgb(0x969084)),
+                                ),
                         )
                     })
                     .when(!body.is_empty(), |d| {
@@ -5692,9 +5705,11 @@ impl ReaderView {
                                 .debug_selector(|| "annotation-card-body".into())
                                 .w_full()
                                 .child(
-                                    TextView::markdown(
-                                        SharedString::from(format!("annotation-body-{id}")),
-                                        body.clone(),
+                                    self.rich_markdown(
+                                        format!("annotation-body-{id}"),
+                                        &body,
+                                        240.,
+                                        cx,
                                     )
                                     .selectable(true)
                                     .w_full()

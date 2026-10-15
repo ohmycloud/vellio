@@ -180,6 +180,8 @@ pub(super) fn reader_rich_style(
     )
     .with_companion(
         StyleRefinement::default()
+            .border_l_0()
+            .px_0()
             .font_family(
                 reader
                     .fonts

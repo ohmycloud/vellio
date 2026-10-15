@@ -1820,7 +1820,8 @@ fn inline_formula_scanner_preserves_code_and_escaped_dollars() {
         vec![r"e^{i\pi}+1=0", r"\frac{1}{2}"]
     );
     let transformed = formula::native_markdown_html(text);
-    assert_eq!(transformed.matches("data-vellio-math").count(), 2);
+    assert_eq!(transformed.matches("data-vellio-math").count(), 3);
+    assert!(transformed.contains("data-display=\"true\""));
     assert!(!transformed.contains("<img") && !transformed.contains("data:image"));
     assert!(transformed.contains("<code>code $x$</code>"));
     let plain = easyread_gpui::annotations::plain_text(&transformed);

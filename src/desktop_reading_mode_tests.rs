@@ -21,6 +21,47 @@ fn fixture(epub: bool) -> Value {
 }
 
 #[gpui_kit::test]
+fn language_companions_have_no_left_border_or_indent_in_all_reading_modes(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut reader = ReaderView::new(fixture(false), None, None, window, cx);
+            for mode in [
+                ReadingMode::Original,
+                ReadingMode::Translation,
+                ReadingMode::Bilingual,
+            ] {
+                reader.reading_mode = mode;
+                for original_first in [true, false] {
+                    reader.original_first = original_first;
+                    let original = reader.primary_original();
+                    let style = super::typography::reader_rich_style(
+                        &reader,
+                        0,
+                        original,
+                        reader
+                            .fonts
+                            .reading(reader.appearance.reading_font(), original),
+                        21.,
+                        cx,
+                    );
+                    assert_eq!(
+                        style.companion().border_widths.left,
+                        Some(px(0.).into()),
+                        "En / 译文 companions must not inherit the ordinary blockquote border"
+                    );
+                    assert_eq!(style.companion().padding.left, Some(px(0.).into()));
+                    assert_eq!(style.companion().padding.right, Some(px(0.).into()));
+                }
+            }
+            reader
+        });
+        Root::new(view, window, cx)
+    });
+    settle(cx);
+}
+
+#[gpui_kit::test]
 fn bilingual_paragraph_click_captures_only_the_clicked_translation(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let source = "<p>First original.</p><p>Second original.</p><p>Last original.</p>";
@@ -174,6 +215,20 @@ fn reading_mode_original_paragraph_click_expands_and_collapses_only_its_translat
         assert!(
             r.text_views[&(0, true)].1.read(cx).bounds().top()
                 < r.text_views[&(0, false)].1.read(cx).bounds().top()
+        );
+        let primary = r.text_views[&(0, true)]
+            .1
+            .read(cx)
+            .paragraph_bounds(0)
+            .unwrap();
+        let secondary = r.text_views[&(0, false)]
+            .1
+            .read(cx)
+            .paragraph_bounds(0)
+            .unwrap();
+        assert!(
+            (primary.left() - secondary.left()).abs() < px(1.),
+            "Expanded translation must align with its source, not retain the old border padding"
         );
     });
     cx.simulate_click(source.center(), Modifiers::default());
@@ -508,6 +563,8 @@ fn bilingual_pdf_pairs_each_paragraph_in_both_orders_without_duplicate_images(
             assert_eq!(html.matches("<img ").count(), 1);
             assert!(r.reader_suppresses_pdf_figure(1));
             let v = view.read(cx);
+            assert!((v.paragraph_bounds(5).unwrap().left() - v.paragraph_bounds(6).unwrap().left()).abs() < px(1.),
+                "Paired primary and companion paragraphs must share the same left edge in both bilingual orders");
             let mut last = v.bounds().top();
             for index in 0..10 {
                 let paragraph = v.paragraph_bounds(index).unwrap();

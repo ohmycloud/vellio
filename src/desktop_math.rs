@@ -9,7 +9,72 @@ use gpui_kit::{
     App, InteractiveElement, IntoElement, ParentElement, PathBuilder, Styled, Window, canvas, div,
     point, px,
 };
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
+
+/// Cache presentation only; saved chat, discussion and annotation text stays raw.
+#[derive(Default)]
+pub(super) struct MarkdownCache {
+    html: HashMap<String, (String, String)>,
+    requested: HashSet<(String, bool)>,
+}
+impl MarkdownCache {
+    pub(super) fn clear(&mut self) {
+        self.html.clear();
+        self.requested.clear();
+    }
+    fn prepare(&mut self, id: &str, source: &str) -> (String, Vec<(String, bool)>) {
+        if let Some((_, html)) = self.html.get(id).filter(|(old, _)| old == source) {
+            return (html.clone(), vec![]);
+        }
+        let pending = formula::math_spans(source)
+            .into_iter()
+            .map(|m| (m.tex, m.display))
+            .filter(|(tex, display)| formula::cached_layout(tex, *display).is_none())
+            .filter(|key| self.requested.insert(key.clone()))
+            .collect();
+        let html = formula::native_markdown_html(source);
+        self.html.insert(id.into(), (source.into(), html.clone()));
+        (html, pending)
+    }
+}
+impl super::ReaderView {
+    /// Chat, replies and annotations use the reader's native Typst objects, not
+    /// a plain Markdown component. Compile new formulas off the paint thread;
+    /// incomplete/unsupported TeX remains readable and can never disappear.
+    pub(super) fn rich_markdown(
+        &self,
+        id: String,
+        source: &str,
+        max_width: f32,
+        cx: &mut gpui_kit::Context<Self>,
+    ) -> gpui_kit::base::TextView {
+        let (html, pending) = self.rich_markdown_cache.borrow_mut().prepare(&id, source);
+        if !pending.is_empty() {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .spawn(async move {
+                        for (tex, display) in pending {
+                            let _ = formula::layout(&tex, display);
+                        }
+                    })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    this.chat_list
+                        .remeasure_items(0..this.chat_list.item_count());
+                    this.list.remeasure_items(0..this.list.item_count());
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+        gpui_kit::base::TextView::html(gpui_kit::SharedString::from(id), html).markdown_extensions(
+            gpui_kit::base::text::MarkdownExtensions::default().plugin(MathPlugin { max_width }),
+        )
+    }
+}
 
 pub(super) struct MathPlugin {
     pub max_width: f32,

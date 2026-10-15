@@ -13,9 +13,9 @@ fn escape(text: &str) -> String {
         .replace('>', "&gt;")
 }
 
-// The application emits HTML void tags. Normalize only those tags for the
-// read-only XML walker; retain all source attributes and text/entity offsets.
-pub(crate) fn xhtml(html: &str) -> String {
+/// Normalize application-generated HTML void tags for a read-only XML walker.
+/// Retains all source attributes and text/entity offsets.
+pub fn xhtml(html: &str) -> String {
     let mut out = String::new();
     let mut rest = html;
     while let Some(start) = rest.find('<') {

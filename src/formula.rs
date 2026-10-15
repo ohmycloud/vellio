@@ -142,22 +142,230 @@ pub fn native_markdown_html(source: &str) -> String {
     let mut markdown = String::new();
     let mut cursor = 0;
     let mut objects = vec![];
-    for (i, (range, tex)) in inline_math(source).into_iter().enumerate() {
+    for (i, math) in math_spans(source).into_iter().enumerate() {
         let mut placeholder = format!("VELLIOMATH{hash}X{i}");
         while source.contains(&placeholder) {
             placeholder.push('X');
         }
-        markdown.push_str(&source[cursor..range.start]);
-        markdown.push_str(&placeholder);
-        objects.push((placeholder, native_html(tex, false)));
-        cursor = range.end;
+        markdown.push_str(&source[cursor..math.range.start]);
+        if math.display {
+            // A display formula needs its own paragraph even when the model
+            // omits blank lines or writes $$...$$ on a single line. Retain
+            // quote/list continuation prefixes rather than breaking nesting.
+            let prefix = continuation_prefix(source, math.range.start);
+            markdown.push_str(&format!(
+                "\n{prefix}\n{prefix}{placeholder}\n{prefix}\n{prefix}"
+            ));
+        } else {
+            markdown.push_str(&placeholder);
+        }
+        objects.push((
+            placeholder,
+            native_html(&math.tex, math.display),
+            math.display,
+        ));
+        cursor = math.range.end;
     }
     markdown.push_str(&source[cursor..]);
     let mut html = crate::annotations::html(&markdown);
-    for (placeholder, object) in objects {
+    for (placeholder, object, display) in objects {
+        if display {
+            html = html.replace(
+                &format!("<p><span>{placeholder}</span></p>"),
+                &format!("<p style=\"text-align:center\"><span>{placeholder}</span></p>"),
+            );
+        }
         html = html.replace(&placeholder, &object);
     }
     html
+}
+
+/// Presentation-only math, with UTF-8 byte ranges in the unchanged Markdown.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MathSpan {
+    pub range: std::ops::Range<usize>,
+    pub tex: String,
+    pub display: bool,
+}
+
+/// Recognize `$...$`, `$$...$$`, `\(...\)` and `\[...\]`. Markdown owns code
+/// spans/fences (including tildes and indented code), so examples stay literal.
+/// A streaming, unclosed display fence must not consume the rest as a formula.
+pub fn math_spans(source: &str) -> Vec<MathSpan> {
+    use markdown::mdast::Node;
+    if !source.contains(['$', '\\']) {
+        return vec![];
+    }
+    let mut options = markdown::ParseOptions::gfm();
+    options.constructs.math_text = true;
+    options.constructs.math_flow = true;
+    let Ok(ast) = markdown::to_mdast(source, &options) else {
+        return vec![];
+    };
+    fn visit(
+        node: &Node,
+        source: &str,
+        math: &mut Vec<MathSpan>,
+        code: &mut Vec<std::ops::Range<usize>>,
+    ) {
+        let range = node.position().map(|p| p.start.offset..p.end.offset);
+        match node {
+            Node::Code(_) | Node::InlineCode(_) | Node::Html(_) => {
+                if let Some(range) = range {
+                    code.push(range);
+                }
+            }
+            Node::InlineMath(value) => {
+                if let Some(range) = range {
+                    let display = source[range.clone()].starts_with("$$");
+                    if !value.value.trim().is_empty() {
+                        math.push(MathSpan {
+                            range,
+                            tex: value.value.clone(),
+                            display,
+                        });
+                    }
+                }
+            }
+            Node::Math(value) => {
+                if let Some(range) = range {
+                    let raw = &source[range.clone()];
+                    let opening = raw.bytes().take_while(|b| *b == b'$').count();
+                    let last = raw.lines().last().unwrap_or("").trim_end();
+                    let closing = last.bytes().rev().take_while(|b| *b == b'$').count();
+                    let prefix = &last[..last.len() - closing];
+                    if raw.contains('\n')
+                        && closing >= opening
+                        && prefix.chars().all(|c| c.is_whitespace() || c == '>')
+                        && !value.value.trim().is_empty()
+                    {
+                        math.push(MathSpan {
+                            range: range.clone(),
+                            tex: value.value.clone(),
+                            display: true,
+                        });
+                    }
+                    code.push(range); // Also protect incomplete streamed fences.
+                }
+            }
+            _ => {
+                if let Some(children) = node.children() {
+                    for child in children {
+                        visit(child, source, math, code);
+                    }
+                }
+            }
+        }
+    }
+    let mut math = vec![];
+    let mut code = vec![];
+    visit(&ast, source, &mut math, &mut code);
+    let bytes = source.as_bytes();
+    let escaped = |at: usize| {
+        bytes[..at]
+            .iter()
+            .rev()
+            .take_while(|b| **b == b'\\')
+            .count()
+            % 2
+            == 1
+    };
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if let Some(range) = code.iter().find(|r| r.contains(&i)) {
+            i = range.end;
+            continue;
+        }
+        if bytes[i] != b'\\' || escaped(i) || !matches!(bytes[i + 1], b'(' | b'[') {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let display = bytes[i + 1] == b'[';
+        let closing = if display { b']' } else { b')' };
+        i += 2;
+        let mut end = i;
+        while end + 1 < bytes.len() {
+            if code.iter().any(|r| r.contains(&end)) {
+                break;
+            }
+            if bytes[end] == b'\\' && bytes[end + 1] == closing && !escaped(end) {
+                let prefix = continuation_prefix(source, start);
+                let tex = source[start + 2..end]
+                    .lines()
+                    .enumerate()
+                    .map(|(line, text)| {
+                        if line > 0 {
+                            text.strip_prefix(&prefix).unwrap_or(text)
+                        } else {
+                            text
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if !tex.trim().is_empty() {
+                    math.push(MathSpan {
+                        range: start..end + 2,
+                        tex: tex.trim().into(),
+                        display,
+                    });
+                }
+                i = end + 2;
+                break;
+            }
+            end += 1;
+        }
+        if i == start + 2 {
+            i = end.max(i);
+        }
+    }
+    // Bracket math may contain dollar tokens, and dollar math may contain
+    // brackets. Prefer the outer expression, never create nested objects.
+    math.sort_by_key(|m| (m.range.start, std::cmp::Reverse(m.range.end)));
+    let mut end = 0;
+    math.retain(|m| {
+        if m.range.start < end {
+            false
+        } else {
+            end = m.range.end;
+            true
+        }
+    });
+    math
+}
+
+fn continuation_prefix(source: &str, start: usize) -> String {
+    let line = &source[source[..start].rfind('\n').map_or(0, |at| at + 1)..start];
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b'>') {
+        i += 1;
+    }
+    let mut prefix = line[..i].to_owned();
+    let rest = &line[i..];
+    let marker = if matches!(bytes.get(i), Some(b'-' | b'+' | b'*')) {
+        1
+    } else {
+        rest.bytes().take_while(u8::is_ascii_digit).count()
+    };
+    let width = if marker > 0 && rest.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+        if matches!(rest.as_bytes().get(marker), Some(b'.' | b')')) {
+            marker + 1
+        } else {
+            0
+        }
+    } else {
+        marker
+    };
+    if width > 0
+        && rest
+            .as_bytes()
+            .get(width)
+            .is_some_and(u8::is_ascii_whitespace)
+    {
+        prefix.push_str(&" ".repeat(width + 1));
+    }
+    prefix
 }
 
 /// Single-dollar math outside escaped dollars and Markdown code spans/fences.
