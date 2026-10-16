@@ -1,0 +1,17 @@
+{
+ "id": "migration-fixture",
+ "paper": {
+  "schema": 2,
+  "meta": {"title_zh": "EasyRead · GPUI 迁移验证", "title_en": "Native reader feasibility", "pages": [{"n": 1, "img": "pages/page-001.webp"}]},
+  "blocks": [
+   {"id": "s1", "type": "heading", "page": 1, "zh": "原生阅读与旧数据兼容", "en": "Native reading and data compatibility"},
+   {"id": "s1-p1", "type": "para", "page": 1, "zh": "这是译者后来更新的段落。", "en": "This paragraph has a reader-owned edit that must survive translator updates."},
+   {"id": "s1-p2", "type": "para", "page": 1, "zh": "中文正文、**重点**与英文对照通过原生 Markdown 显示。可拖动选择文字并复制。", "en": "Native Markdown supports prose, emphasis, selection and copying."},
+   {"id": "list1", "type": "list", "page": 1, "items": [{"zh": "保留 Python 翻译服务", "en": "Keep the translation service"}, {"zh": "逐步替换桌面界面", "en": "Replace the desktop interface incrementally"}]},
+   {"id": "table1", "type": "table", "page": 1, "caption_zh": "表 1：兼容旧格式的表头", "caption_en": "Table 1: legacy header", "head": ["方法", "分数"], "rows": [["A", "0.9"], ["B"]]},
+   {"id": "eq1", "type": "math", "page": 1, "tex": "\\mathcal{L} = -\\log \\sigma(\\beta \\Delta)"}
+  ]
+ },
+ "reader": {"schema": 2, "rev": 1, "edits": {"s1-p1": {"zh": "这是我的修订；译者更新后仍应保留。", "base": "old-base", "at": "2026-10-03T00:00:00+00:00"}}, "notes": {}, "progress": {}},
+ "layout": {}, "discussion": {"entries": []}, "versions": {}
+}
