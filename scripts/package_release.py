@@ -125,10 +125,18 @@ def package(target, version, pdfium_dir, out, require_signing=False):
                         if path.is_file():
                             stream.write(path, path.relative_to(staging))
             else:
-                (app / name).chmod(0o755)
+                # Write target Unix permissions into the archive directly.
+                # Windows chmod/stat cannot represent executable mode bits.
+                def linux_permissions(member):
+                    if member.isdir() or member.name == "Vellio/Vellio":
+                        member.mode = 0o755
+                    elif member.isfile():
+                        member.mode = 0o644
+                    return member
+
                 archive = out / f"{stem}.tar.gz"
                 with tarfile.open(archive, "w:gz") as stream:
-                    stream.add(app, arcname="Vellio")
+                    stream.add(app, arcname="Vellio", filter=linux_permissions)
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     archive.with_name(archive.name + ".sha256").write_text(f"{digest}  {archive.name}\n", encoding="utf-8")
     print(archive)

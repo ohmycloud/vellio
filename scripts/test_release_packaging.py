@@ -59,6 +59,29 @@ class PackagingTests(unittest.TestCase):
             self.assertEqual(stream.getmember("Vellio/Vellio").mode & 0o777, 0o755)
             self.assertIn("Vellio/libpdfium.so", stream.getnames())
 
+    def test_linux_archive_permissions_do_not_depend_on_windows_host_metadata(self):
+        original_gettarinfo = tarfile.TarFile.gettarinfo
+
+        def windows_metadata(stream, *args, **kwargs):
+            member = original_gettarinfo(stream, *args, **kwargs)
+            if member.isdir():
+                member.mode = 0o777
+            elif member.isfile():
+                member.mode = 0o666
+            return member
+
+        for target in ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]:
+            with self.subTest(target=target):
+                self.build(target)
+                with patch.object(tarfile.TarFile, "gettarinfo", windows_metadata):
+                    archive = release.package(target, "1.2.3", self.engine, self.out)
+                with tarfile.open(archive) as stream:
+                    for member in stream.getmembers():
+                        expected = 0o755 if member.isdir() or member.name == "Vellio/Vellio" else 0o644
+                        self.assertEqual(member.mode, expected, member.name)
+                    self.assertEqual(stream.extractfile("Vellio/Vellio").read(), b"executable fixture")
+                    self.assertEqual(stream.extractfile("Vellio/libpdfium.so").read(), b"engine fixture")
+
     def test_mac_bundle_version_identifier_and_signing_requirement(self):
         target = "aarch64-apple-darwin"
         self.build(target)
