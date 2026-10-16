@@ -100,6 +100,11 @@ mod settings;
 mod source_navigation_tests;
 #[path = "desktop_typography.rs"]
 mod typography;
+#[path = "desktop_updates.rs"]
+mod updates;
+#[cfg(all(test, feature = "desktop-ui-tests"))]
+#[path = "desktop_updates_tests.rs"]
+mod updates_tests;
 
 const READER_BACKGROUND: u32 = 0xf6f3ec;
 
@@ -214,6 +219,7 @@ struct ReaderView {
     reader_focus: FocusHandle,
     home: home::HomeState,
     settings: settings::SettingsState,
+    updates: updates::UpdateUi,
     raw: Value,
     state: ReaderState,
     epub_code_language: Option<&'static str>,
@@ -572,6 +578,7 @@ impl ReaderView {
             formulas: HashMap::new(),
             inline_formulas: HashMap::new(),
             rich_markdown_cache: Default::default(),
+            updates: updates::UpdateUi::load(),
             list,
             chat_list,
             chat_following: true,
@@ -604,6 +611,7 @@ impl ReaderView {
         let current_thread = view.tid.clone();
         view.select_chat_thread(&current_thread, cx);
         view.enforce_features();
+        view.start_update_checks(cx);
         view.load_page();
         view.load_outline(cx);
         view.fill_editor(window, cx);

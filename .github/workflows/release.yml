@@ -1,0 +1,106 @@
+name: Build Vellio desktop releases
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+    env:
+      CARGO_BUILD_JOBS: "2"
+      RUST_MIN_STACK: "16777216"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev cmake pkg-config libfontconfig1-dev libfreetype6-dev libxcb1-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libasound2-dev libudev-dev libssl-dev libzstd-dev
+      - name: Determine application version
+        shell: bash
+        run: |
+          version="$(python -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then version="${GITHUB_REF_NAME#v}"; fi
+          echo "VELLIO_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Update and packaging tests (no external API calls)
+        run: |
+          cargo test --locked --lib updates::tests
+          python -m unittest discover -s scripts -p 'test_release*.py'
+      - name: Install matching PDFium engine for this runner
+        run: |
+          python -m pip install --no-deps --only-binary=:all: --target target/pdfium-wheel pypdfium2==5.13.0
+      - name: Compile native application
+        run: cargo build --locked --release --features desktop --target ${{ matrix.target }}
+      - name: Verify embedded release version without starting the GUI
+        shell: bash
+        run: |
+          exe="target/${{ matrix.target }}/release/easyread-gpui"
+          if [[ "$RUNNER_OS" == Windows ]]; then exe="$exe.exe"; fi
+          test "$("$exe" --version)" = "Vellio $VELLIO_VERSION"
+      - name: Package and sign
+        shell: bash
+        env:
+          # Like EasyRead, the same fixed macOS certificate is imported into a
+          # temporary keychain, then removed. Never commit certificates or keys.
+          MAC_SIGN_P12: ${{ secrets.MAC_SIGN_P12 }}
+          MAC_SIGN_P12_PASSWORD: ${{ secrets.MAC_SIGN_P12_PASSWORD }}
+          MAC_SIGN_IDENTITY: ${{ secrets.MAC_SIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          WINDOWS_SIGN_PFX: ${{ secrets.WINDOWS_SIGN_PFX }}
+          WINDOWS_SIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
+        run: |
+          args=()
+          if [[ "$RUNNER_OS" == macOS && "$GITHUB_REF" == refs/tags/v* ]]; then args+=(--require-signing); fi
+          python scripts/package_release.py --target '${{ matrix.target }}' --version "$VELLIO_VERSION" "${args[@]}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Vellio-${{ matrix.target }}
+          path: target/release-assets/*
+          if-no-files-found: error
+
+  publish:
+    name: Attach packages to GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          draft: true
+          # Inspect/test all four native packages, then publish the draft.
+          # Drafts and prereleases are never advertised by the in-app checker.

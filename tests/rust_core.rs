@@ -1235,9 +1235,9 @@ fn home_catalog_reads_native_progress_and_preserves_source_files() {
         &[]
     ));
     let ws = lib.workspace("book-home").unwrap();
+    ws.set_reading_status("unread").unwrap();
     ws.update("item", |item| {
         item["starred"] = json!(true);
-        item["status"] = json!("unread");
         Ok(())
     })
     .unwrap();

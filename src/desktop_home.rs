@@ -41,7 +41,7 @@ pub(super) struct HomeState {
     pub(super) cancellable_task: bool,
     pub focus: FocusHandle,
     pub search: Entity<InputState>,
-    brand_icon: Arc<Image>,
+    pub(super) brand_icon: Arc<Image>,
     pub(super) folder_input: Entity<InputState>,
     pub(super) rename_input: Entity<InputState>,
     rename_id: Option<String>,
@@ -50,7 +50,7 @@ pub(super) struct HomeState {
     pub(super) prefs: Value,
     pub(super) filter: String,
     sort: usize,
-    popup: Option<&'static str>,
+    pub(super) popup: Option<&'static str>,
     popup_anchors: HashMap<&'static str, Bounds<Pixels>>,
     bounds: Option<Bounds<Pixels>>,
     folder_papers: Option<Vec<String>>,
@@ -346,10 +346,14 @@ impl ReaderView {
                     break;
                 }
                 let result = lib.workspace(&id).and_then(|ws| {
-                    ws.update("item", |item| {
-                        item[field] = value.clone();
-                        Ok(())
-                    })
+                    if field == "status" {
+                        ws.set_reading_status(value.as_str().unwrap_or(""))
+                    } else {
+                        ws.update("item", |item| {
+                            item[field] = value.clone();
+                            Ok(())
+                        })
+                    }
                 });
                 if let Err(e) = result {
                     let _ = tx.send(Event::Error(format!("文献更新失败：{e}")));
@@ -1142,7 +1146,13 @@ impl ReaderView {
         match popup {
             "help" => {
                 content = content.child(self.home.text("Open a paper to read. Select text to highlight, take notes or ask AI. Your reading position and drafts save automatically.", "点击文献开始阅读。选中文字可高亮、写笔记或提问。阅读位置与草稿自动保存。"))
-                    .child(self.home.text("Use / to search the library. Batch actions organize papers into folders and update reading status.", "按 / 搜索文献库。批量操作可加入文件夹或设置阅读状态。"));
+                    .child(self.home.text("Use / to search the library. Batch actions organize papers into folders and update reading status.", "按 / 搜索文献库。批量操作可加入文件夹或设置阅读状态。"))
+                    .child(Button::new("home-about-updates").debug_selector(|| "home-about-updates".into()).ghost()
+                        .label(self.home.text("About Vellio / Updates", "关于 Vellio / 软件更新"))
+                        .on_click(cx.listener(|this, _, window, cx| this.open_about(window, cx))))
+                    .child(Button::new("home-report-issue").ghost()
+                        .label(self.home.text("Report on GitHub", "在 GitHub 反馈"))
+                        .on_click(|_, _, cx| cx.open_url(easyread_gpui::updates::ISSUES)));
             }
             "sort" => {
                 for (i, (en, zh)) in SORT_OPTIONS.into_iter().enumerate() {

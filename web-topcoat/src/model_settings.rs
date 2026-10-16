@@ -79,6 +79,10 @@ async fn settings_page(cx: &Cx) -> Result<impl View> {
         .tab
         .clone()
         .unwrap_or_else(|| "model".into());
+    if tab == "about" {
+        web_updates::check(false);
+    }
+    let update = web_updates::snapshot();
     let root = desktop_library_path();
     let file = root.join(".settings.json");
     let prefs = model_preferences().map_err(Error::from_anyhow)?;
@@ -109,10 +113,10 @@ async fn settings_page(cx: &Cx) -> Result<impl View> {
     };
     Ok(view! {
         <!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-            <title>"Settings · Vellio"</title><link rel="stylesheet" href="/settings.css"><script src="/settings.js" defer="defer"></script>
+            <title>"Settings · Vellio"</title><link rel="stylesheet" href="/settings.css"><script src="/settings.js" defer="defer"></script><script src="/updates.js" defer="defer"></script>
         </head><body class="settings-page"><div class="settings-shell">
             <header class="settings-header"><a href="/" class="settings-back" title="Back to library">"‹"</a><h1>"Settings"</h1>
-                <nav aria-label="Settings tabs"><a class=(if tab == "model" {"active"}else{""}) href="/settings?tab=model">"Model"</a><a class=(if tab == "reading" {"active"}else{""}) href="/settings?tab=reading">"Reading"</a><a class=(if tab == "sidebar" {"active"}else{""}) href="/settings?tab=sidebar">"Sidebar"</a><a class=(if tab == "cloud" {"active"}else{""}) href="/settings?tab=cloud">"Cloud library"</a><a class=(if tab == "shortcuts" {"active"}else{""}) href="/settings?tab=shortcuts">"Keyboard shortcuts"</a></nav>
+                <nav aria-label="Settings tabs"><a class=(if tab == "model" {"active"}else{""}) href="/settings?tab=model">"Model"</a><a class=(if tab == "reading" {"active"}else{""}) href="/settings?tab=reading">"Reading"</a><a class=(if tab == "sidebar" {"active"}else{""}) href="/settings?tab=sidebar">"Sidebar"</a><a class=(if tab == "cloud" {"active"}else{""}) href="/settings?tab=cloud">"Cloud library"</a><a class=(if tab == "shortcuts" {"active"}else{""}) href="/settings?tab=shortcuts">"Keyboard shortcuts"</a><a class=(if tab == "about" {"active"}else{""}) href="/settings?tab=about">"About / Updates"</a></nav>
             </header>
             <main class="settings-content">
                 if tab == "model" {
@@ -160,6 +164,21 @@ async fn settings_page(cx: &Cx) -> Result<impl View> {
                 else if tab == "sidebar" { <h2>"Sidebar"</h2><p>"Use the desktop app to pin or hide built-in folders. Web folder creation and drag-to-file are available in the library."</p> }
                 else if tab == "cloud" { <h2>"Cloud library"</h2><p>"Cloud library relocation is desktop-only. This local Web service does not move or publish the desktop library."</p> }
                 else if tab == "shortcuts" { <h2>"Keyboard shortcuts"</h2><p>"The desktop app owns keyboard shortcuts; this browser reader has a different event system. Edit shortcuts in the desktop app."</p> }
+                else if tab == "about" {
+                    <section id="about-updates"><h2>"Vellio"</h2><p class="settings-source">"Runs locally. Your books and notes stay on your computer."</p>
+                        <div class="update-card"><div class="update-heading"><div><h3>"Version "(easyread_gpui::updates::VERSION)</h3><p id="update-status" role="status" aria-live="polite">(update["status"].as_str().unwrap_or("Not checked yet"))</p></div>
+                            <button id="check-updates" type="button" disabled=(update["checking"].as_bool().unwrap_or(false))>"Check for updates"</button></div>
+                            <label class="update-automatic"><input id="automatic-updates" type="checkbox" checked=(update["enabled"].as_bool().unwrap_or(true))>"Check for new versions automatically (once a day)"</label>
+                        </div>
+                        <p id="update-error" role="alert">(update["error"].as_str().unwrap_or(""))</p>
+                        <section id="update-release" hidden=(update["latest"].as_str().unwrap_or("").is_empty())><h3 id="update-latest">(format!("What's new in {}",update["latest"].as_str().unwrap_or("")))</h3><pre id="update-notes">(update["notes"].as_str().unwrap_or(""))</pre>
+                            <a id="download-update" class="settings-primary" href=(update["download"].as_str().unwrap_or("")) hidden=(update["download"].as_str().unwrap_or("").is_empty())>(format!("Download for {}",update["platform"].as_str().unwrap_or("this computer")))</a>
+                            <p id="update-no-package" hidden=(!update["download"].as_str().unwrap_or("").is_empty())>"No package for this CPU/OS in this release. See Releases for available downloads."</p>
+                        </section>
+                        <p class="settings-source">"Downloads open in your browser. Quit Vellio before replacing the app. macOS: replace Vellio.app; Windows / Linux: extract the complete package to replace the program, not your library. The local Web server must be stopped and rebuilt from source separately; desktop downloads do not replace it."</p>
+                        <p><a href=(easyread_gpui::updates::RELEASES) target="_blank" rel="noopener noreferrer">"All releases / Download"</a>"　"<a href=(easyread_gpui::updates::ISSUES) target="_blank" rel="noopener noreferrer">"Report on GitHub"</a></p>
+                    </section>
+                }
                 else { <p>"Unknown settings tab."</p> }
             </main>
         </div>

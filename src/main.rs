@@ -57,9 +57,13 @@ fn main() -> Result<()> {
                 list = true;
                 headless = true;
             }
+            "--version" | "-V" => {
+                println!("Vellio {}", easyread_gpui::updates::VERSION);
+                return Ok(());
+            }
             "--help" | "-h" => {
                 println!(
-                    "Vellio Rust / GPUI\n  --library DIR [--paper ID] [--import PDF_OR_EPUB | --migrate-copy DIR]\n  --list | --headless | --check-state\n  --state STATE.json (snapshot mode)\n  --ops OPS.json --export STATE.json\n  --complete-images (with --paper, add missing PDF images)\n  --ask QUESTION [--thread ID] | --translate [--translate-pages 2,3,7] (requires EASYREAD_API_BASE/MODEL/API_KEY)\n  --formula TEX --formula-out OUTPUT.svg\n  --pdfium LIBRARY (or EASYREAD_PDFIUM_LIBRARY)\nNative window: cargo run --features desktop -- --library DIR"
+                    "Vellio Rust / GPUI\n  --library DIR [--paper ID] [--import PDF_OR_EPUB | --migrate-copy DIR]\n  --list | --headless | --check-state | --version\n  --state STATE.json (snapshot mode)\n  --ops OPS.json --export STATE.json\n  --complete-images (with --paper, add missing PDF images)\n  --ask QUESTION [--thread ID] | --translate [--translate-pages 2,3,7] (requires EASYREAD_API_BASE/MODEL/API_KEY)\n  --formula TEX --formula-out OUTPUT.svg\n  --pdfium LIBRARY (or EASYREAD_PDFIUM_LIBRARY)\nNative window: cargo run --features desktop -- --library DIR"
                 );
                 return Ok(());
             }

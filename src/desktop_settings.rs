@@ -14,12 +14,13 @@ const MUTED: u32 = 0x8c8579;
 const BORDER: u32 = 0xd8cfbf;
 const ACCENT: u32 = 0x306778;
 const PAPER: u32 = 0xfbfaf7;
-const TABS: [&str; 5] = [
+const TABS: [&str; 6] = [
     "Model",
     "Reading",
     "Sidebar",
     "Cloud library",
     "Keyboard shortcuts",
+    "About / Updates",
 ];
 pub(super) struct SettingsState {
     pub open: bool,
@@ -41,6 +42,11 @@ pub(super) struct SettingsState {
     pub translation_confirm: bool,
 }
 impl SettingsState {
+    pub(super) fn show_about(&mut self) {
+        self.tab = 5;
+        self.scroll = ScrollHandle::new();
+        self.log_open = false;
+    }
     pub fn new(lib: Option<&Library>, window: &mut Window, cx: &mut Context<ReaderView>) -> Self {
         let (mut committed, notice) = match Preferences::load(lib.map(|l| l.root.as_path())) {
             Ok(p) => (p, String::new()),
@@ -1286,7 +1292,8 @@ impl ReaderView {
                 1 => self.reading_settings(cx),
                 2 => self.sidebar_settings(cx),
                 3 => self.cloud_settings(cx),
-                _ => self.shortcut_settings(cx),
+                4 => self.shortcut_settings(cx),
+                _ => self.about_settings(cx),
             }
         };
         div()
@@ -1361,6 +1368,7 @@ impl ReaderView {
                     )
                     .children(TABS.into_iter().enumerate().map(|(i, title)| {
                         Button::new(("settings-tab", i))
+                            .debug_selector(move || format!("settings-tab-{i}"))
                             .ghost()
                             .h_full()
                             .px(px(if compact { 8. } else { 14. }))
@@ -1387,6 +1395,9 @@ impl ReaderView {
                                 this.settings.model_edit = None;
                                 this.settings.recording = None;
                                 this.settings.focus.focus(window, cx);
+                                if i == 5 {
+                                    this.check_updates(false, cx);
+                                }
                                 cx.notify();
                             }))
                     })),
@@ -1447,8 +1458,19 @@ impl ReaderView {
                                 cx.notify()
                             })),
                     )
+                    .child(
+                        Button::new("settings-about-link")
+                            .ghost()
+                            .label("About / Updates")
+                            .disabled(self.settings.relocating)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.settings.show_about();
+                                this.check_updates(false, cx);
+                                cx.notify();
+                            })),
+                    )
                     .child(div().flex_1())
-                    .when(self.settings.tab == 0, |d| {
+                    .when(matches!(self.settings.tab, 0 | 5), |d| {
                         d.child(
                             Button::new("settings-close")
                                 .ghost()
@@ -1459,7 +1481,7 @@ impl ReaderView {
                                 })),
                         )
                     })
-                    .when(self.settings.tab != 0, |d| {
+                    .when(!matches!(self.settings.tab, 0 | 5), |d| {
                         d.child(
                             Button::new("settings-cancel")
                                 .ghost()

@@ -11,6 +11,8 @@ cargo run
 
 Mac ARM64 本地 PDFium 使用根项目的 `assets/pdfium/libpdfium.dylib`；其他系统须配置与 `pdfium-render` 绑定匹配的 `EASYREAD_PDFIUM_LIBRARY`。本试验与桌面书库默认隔离（`web-topcoat/vellio-web-library/`）；若主动将 `VELLIO_WEB_LIBRARY` 指向桌面书库，可读取相同的 schema-2 `paper.json` / `reader.json`，但**建议先备份**，不要同时在两个程序里编辑。
 
+**软件更新**：首页「? 帮助与更新」及 Settings → About / Updates 显示当前 Rust 核心版本、手动检查、可关闭的每日自动检查、新版本说明和对应服务端系统/CPU 的桌面包下载。更新源固定为 `ohmycloud/vellio` 的稳定 GitHub Releases，网络/限流错误不会冒充最新版；只打开浏览器下载，不执行安装。Web 服务自身仍需更新源码、停止服务并重新编译，桌面下载不会替换 Web 服务。签名、发行包约定与边界见 [软件更新与发行](../docs/updates-and-releases.md)。
+
 已实现的桌面功能对应项：
 
 - **书库首页**：235px 分类侧栏、封面/题名/阅读进度的列表，检索（包含所属文件夹名称）、最近阅读/添加/年份/标题排序，在读/未读/已读/收藏/待解答/回收站筛选；收藏、改名、状态变更、移入/移出回收站；创建/重命名/删除文件夹，并可用拖拽或行内表单加入/移出；多选支持批量归档、设置状态、复制引文、移入/移出回收站。元数据和阅读进度使用现有 `Library::list` / `library_home::summary`，文件夹与回收站沿用桌面的 `.library-home.json` 结构。

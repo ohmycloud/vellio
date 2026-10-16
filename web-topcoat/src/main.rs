@@ -3,6 +3,7 @@
 mod math_svg;
 mod model_settings;
 mod paragraphs;
+mod web_updates;
 use easyread_gpui::{
     ai, annotations, formats::epub, formula, library_home, model::ReaderState,
     paragraph_translation::PairLayout, pdf, settings, store::Library, translation_layout,
@@ -555,7 +556,7 @@ async fn home() -> Result<impl View> {
                 <p class="sidebar-hint">"拖动或批量归档文献；模型设置见右上角。"</p>
             </aside>
             <main class="home-main"><header class="home-top"><h1>"全部文献"</h1><span id="home-count"></span><span class="spacer"></span>
-                <a class="home-model-link" href="/settings" aria-label="打开模型设置">"⚙ 模型设置"</a>
+                <a class="home-model-link" href="/settings?tab=about" aria-label="关于与软件更新">"? 帮助与更新"</a><a class="home-model-link" href="/settings" aria-label="打开模型设置">"⚙ 模型设置"</a>
                 <input id="library-search" type="search" placeholder="搜索标题、作者…" aria-label="搜索文献">
                 <label>"排序 "<select id="library-sort"><option value="recent">"最近阅读"</option><option value="added">"最近添加"</option><option value="year">"发表年份"</option><option value="title">"标题"</option></select></label>
                 <form class="upload-compact" method="post" action="/import" enctype="multipart/form-data"><label class="import-label">"＋ 导入 PDF / EPUB"<input type="file" name="book" accept=".pdf,.epub,application/pdf,application/epub+zip" required=(true)></label><button type="submit">"导入"</button></form>
@@ -605,11 +606,8 @@ async fn library_batch(Form(input): Form<BatchAction>) -> Result<SeeOther> {
                 return Err(bad_request("状态无效").into());
             }
             for book in books {
-                book.update("item", |item| {
-                    item["status"] = json!(status);
-                    Ok(())
-                })
-                .map_err(Error::from_anyhow)?;
+                book.set_reading_status(status)
+                    .map_err(Error::from_anyhow)?;
             }
             Ok(see_other("/"))
         }
@@ -799,11 +797,8 @@ async fn library_action(cx: &Cx, Form(input): Form<LibraryAction>) -> Result<See
             if !matches!(status, "unread" | "reading" | "done") {
                 return Err(bad_request("状态无效").into());
             }
-            book.update("item", |item| {
-                item["status"] = json!(status);
-                Ok(())
-            })
-            .map_err(Error::from_anyhow)?;
+            book.set_reading_status(status)
+                .map_err(Error::from_anyhow)?;
         }
         "rename" => {
             let name = input.value.as_deref().unwrap_or("").trim();

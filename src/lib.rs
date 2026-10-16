@@ -21,3 +21,4 @@ pub mod settings;
 pub mod store;
 pub mod translation_layout;
 pub mod typst_table;
+pub mod updates;

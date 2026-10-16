@@ -40,7 +40,7 @@ PDF 插图及图片整页的外部白底在显示时适配阅读器底色，保�
 
 PDF 中有数学字体与几何证据的公式会恢复为 TeX，再交给 Typst 原生矢量排版，覆盖独立公式以及正文中的变量、上下标、根号、分式和求和上下限。公式裁图和图片预览路径已撤掉；v13 排版缓存自动重建，无需重新导入，也不改写原始 PDF、书库文本或批注记录。PDF→TeX 仍是保守的结构恢复，不是通用 OCR：复杂矩阵、多行对齐、扫描公式和字符顺序交错的区域暂不保证自动恢复，无法确认的内容保留既有文本呈现。有明确 TeX 的矩阵、分段式与多行公式可由同一 Typst 原生渲染器排版。拆分字体的小数、科学计数和数字比值保持完整数学对象；紧接较小子标题的章节标题也保持独立段落。重复变量在页码等上下文被移除后仍按保留下来的上下文定位，避免整页行内公式恢复被撤销；旧译文的 `1/ √ dk` 也可按原文证据恢复为完整分式。详见 [PDF 行内 / 独立公式修复](evidence/pdf-display-equations.md)、[行内分式恢复修复](evidence/pdf-inline-fraction-recovery.md) 和 [小数与相邻标题修复](evidence/pdf-inline-decimals-and-headings.md)。
 
-设置齿轮打开五标签设置面板：Model、Reading、Sidebar、Cloud library 和 Keyboard shortcuts。支持 API 环境密钥引用、Claude Code / Codex CLI 本机登录；可分别指定翻译和 Ask AI 默认模型，并配置页批次和并行度。阅读偏好与功能开关、可编辑快捷键可保存或取消，侧栏文件夹显示/置顶即时生效。云书库操作复制完整书库到选定同步目录下的 `Vellio/library` 并保留原目录，成功后恢复该位置。详情与测试边界见 [设置面板验收](evidence/settings.md)。
+设置齿轮打开六标签设置面板：Model、Reading、Sidebar、Cloud library、Keyboard shortcuts 和 About / Updates。支持 API 环境密钥引用、Claude Code / Codex CLI 本机登录；可分别指定翻译和 Ask AI 默认模型，并配置页批次和并行度。阅读偏好与功能开关、可编辑快捷键可保存或取消，侧栏文件夹显示/置顶即时生效。云书库操作复制完整书库到选定同步目录下的 `Vellio/library` 并保留原目录，成功后恢复该位置。详情与测试边界见 [设置面板验收](evidence/settings.md)。
 
 PDF 规则表格现在会在阅读视图中恢复行列、原始列宽、空白表头和斜体标签，保留可选文字、源链接及批注；无需重新导入。有逐格几何证据的无表头续页按数据行显示，表格底色和边线不再重复显示为图片。恢复依据原 PDF 的横线和字符坐标，扫描及复杂表格仍可通过原页核对。详见 [PDF 表格修复](evidence/pdf-table-layout.md)。只有表头下方一条横线、通过连续竖线分列的规则表格也支持原生恢复，保留源列宽、分隔线和可复制单元格，并隐藏旧导入截图；v12 排版缓存自动重建，无需重新导入。验收见 [单横线表格修复](evidence/pdf-single-rule-tables.md)。
 
@@ -99,6 +99,12 @@ cargo run --locked -- --library ./my-library --paper PAPER_ID --translate-pages 
 ```
 
 翻译按有界并行的页批次补充未译段落/标题，保留 block id、已有译文及 `reader.json` 用户修订。漏项或空译文不会算成功：有效部分先保存，漏页单独补译一次，仍失败的页/块记录在 `job.json`，后续批次继续执行；再次翻译只发送剩余未译块，取消不保存当前响应。首页单选一篇 PDF → Translation →「选未译页翻译…」可勾选源页，已译页不列出；CLI `--translate-pages 2,3,7` 提供相同路径，页码从 1 开始，无效页在调用模型前拒绝。EPUB 没有固定源页，使用普通 `--translate`。首页按正文实际译文与任务记录显示覆盖，不再信任旧的误记完成页。native PDF 翻译现在从原页恢复的标题/段落/图注骨架构建输入，使用不可改写标记保护 TeX、图片位置、代码与格式；丢失结构标记会报失败，不保存扁平结果。正文 `zh` 保留语义 Markdown，原生布局附带源/译文哈希保存，用户修订仍优先。已有保留逐行边界的旧译文可在显示层恢复独立标题、居中题注、配图顺序与源页确认的数学，不重译、不改写原数据；已完全丢失边界的译文不猜测恢复。修复与边界见 [译文排版修复](evidence/translation-layout.md)。该流程仍是中文文本翻译，不等同于原项目的完整多模态重排、跨页续段或多语言流程；任务可靠性验证见 [翻译回归记录](evidence/translation-milestone.md)。
+
+## 软件更新与发行
+
+项目仓库为 <https://github.com/ohmycloud/vellio>。桌面 Settings → **About / Updates**、设置底栏及首页问号菜单均可进入更新页；Web 设置也有对应入口。支持手动检查和可关闭的每日自动检查，显示当前版本、新版说明与匹配系统/CPU 的下载按钮；离线、GitHub 限流、暂无 Release 会分别处理。更新检查不上传书籍、笔记或模型配置。
+
+当前采用 **检查 → 浏览器下载 → 退出后替换程序**，不静默覆盖运行中的应用，也不修改书库。已补充 macOS Intel / Apple Silicon、Windows x64、Linux x64 的原生打包 workflow；macOS 参考 EasyRead 使用独立临时钥匙串签名，可配置 Developer ID 公证；Windows 支持可选 Authenticode 签名。发布流程先生成草稿 Release，需各平台实际验收后人工发布，并非已发布的现成安装包。版本/包名约定、所需 GitHub Secrets、签名限制及测试范围见 [软件更新与发行](docs/updates-and-releases.md)。Web 服务自身仍需更新源码并重新编译，不会被桌面安装包替换。
 
 ## 验证与本地 app
 

@@ -460,6 +460,19 @@ impl Workspace {
         write_json(&self.root.join(format!("{part}.json")), &value)?;
         Ok(value)
     }
+    /// Timestamp explicit status choices so an unread reset can override older
+    /// progress without confusing it with the default status assigned on import.
+    pub fn set_reading_status(&self, status: &str) -> Result<Value> {
+        ensure!(
+            matches!(status, "unread" | "reading" | "done"),
+            "Invalid reading status"
+        );
+        self.update("item", |item| {
+            item["status"] = json!(status);
+            item["status_at"] = json!(now());
+            Ok(())
+        })
+    }
     /// Rename the library entry without moving assets or replacing bibliographic titles.
     pub fn rename(&self, name: &str) -> Result<Value> {
         let name = name.trim();

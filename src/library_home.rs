@@ -107,8 +107,26 @@ pub fn summary(id: &str, state: &Value, native: &Value) -> Value {
     let status = match state["item"]["status"].as_str() {
         Some("done") => "done",
         Some("reading") => "reading",
-        Some("unread") => "unread",
-        _ if progress["block"].is_string() => "reading",
+        // Imports default to unread. Only a deliberate, newer manual reset
+        // should override an existing reading position (including native saves).
+        Some("unread")
+            if state["item"]["status_at"]
+                .as_str()
+                .filter(|at| !at.is_empty())
+                .is_some_and(|at| {
+                    compare_time(at, progress["at"].as_str().unwrap_or(""))
+                        != std::cmp::Ordering::Less
+                }) =>
+        {
+            "unread"
+        }
+        _ if ratio > 0.0
+            || progress["block"]
+                .as_str()
+                .is_some_and(|block| !block.is_empty()) =>
+        {
+            "reading"
+        }
         _ => "unread",
     };
     let notes = state["reader"]["notes"]
@@ -252,6 +270,50 @@ mod tests {
             ["Earlier", "New", "Old", "Unknown"]
         );
         assert_eq!(published_year(&json!({"meta":{"year":0}})), None);
+    }
+
+    #[test]
+    fn imported_unread_status_follows_reading_progress_without_mutating_state() {
+        let mut state = json!({"paper":{"blocks":[{"id":"a"},{"id":"b"},{"id":"c"},{"id":"d"}]},
+            "item":{"status":"unread","custom":"keep"},"reader":{"progress":{}}});
+        assert_eq!(summary("book", &state, &json!({}))["status"], "unread");
+        state["reader"]["progress"] = json!({"block":"a","at":"2026-10-01T00:00:00Z"});
+        let before = state.clone();
+        let item = summary("book", &state, &json!({}));
+        assert_eq!(item["ratio"], 0.25);
+        assert_eq!(item["status"], "reading");
+        assert_eq!(state, before, "listing must not rewrite saved metadata");
+
+        // Older ratio-only records also indicate reading has started.
+        state["reader"]["progress"] = json!({"ratio":0.25});
+        assert_eq!(summary("book", &state, &json!({}))["status"], "reading");
+        state["reader"]["progress"] = json!({"block":"","ratio":0.0});
+        assert_eq!(summary("book", &state, &json!({}))["status"], "unread");
+    }
+
+    #[test]
+    fn manual_unread_reset_is_respected_until_a_newer_reading_position() {
+        let state = json!({"paper":{"blocks":[{"id":"a"},{"id":"b"}]},
+            "item":{"status":"unread","status_at":"2026-10-02T00:00:00Z"},
+            "reader":{"progress":{"block":"a","at":"2026-10-01T00:00:00Z"}}});
+        assert_eq!(summary("book", &state, &json!({}))["status"], "unread");
+        let native = json!({"progress":{"block":"b","at":"2026-10-03T00:00:00Z"}});
+        assert_eq!(summary("book", &state, &native)["status"], "reading");
+        let unknown = json!({"progress":{"block":"removed","at":"2026-10-04T00:00:00Z"}});
+        assert_eq!(summary("book", &state, &unknown)["status"], "unread");
+        let mut resumed = state.clone();
+        resumed["reader"]["progress"]["at"] = json!("2026-10-03T00:00:00Z");
+        assert_eq!(summary("book", &resumed, &json!({}))["status"], "reading");
+    }
+
+    #[test]
+    fn default_unread_status_follows_native_reading_position() {
+        let state = json!({"paper":{"blocks":[{"id":"a"},{"id":"b"}]},
+            "item":{"status":"unread"}});
+        let native = json!({"progress":{"block":"a","at":"2026-10-01T00:00:00Z"}});
+        assert_eq!(summary("book", &state, &native)["status"], "reading");
+        let unknown = json!({"progress":{"block":"removed","at":"2026-10-02T00:00:00Z"}});
+        assert_eq!(summary("book", &state, &unknown)["status"], "unread");
     }
 
     #[test]
