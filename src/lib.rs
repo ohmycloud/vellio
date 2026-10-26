@@ -5,6 +5,7 @@ pub mod annotations;
 pub mod code_syntax;
 pub mod epub_pagination;
 pub mod figure_image;
+pub mod fonts;
 pub mod formats;
 pub mod formula;
 pub mod layout;

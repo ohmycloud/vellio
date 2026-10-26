@@ -7042,12 +7042,8 @@ pub fn run(raw: Value, library: Option<Library>, workspace: Option<Workspace>) {
             set_dock_icon();
             cx.text_system()
                 .add_fonts(vec![
-                    std::borrow::Cow::Borrowed(include_bytes!(
-                        "../assets/fonts/NotoSerifSC-Regular.ttf"
-                    )),
-                    std::borrow::Cow::Borrowed(include_bytes!(
-                        "../assets/fonts/NotoSerifSC-SemiBold.ttf"
-                    )),
+                    std::borrow::Cow::Borrowed(easyread_gpui::fonts::NOTO_SERIF_SC_REGULAR),
+                    std::borrow::Cow::Borrowed(easyread_gpui::fonts::NOTO_SERIF_SC_SEMIBOLD),
                 ])
                 .expect("Cannot load bundled Noto Serif SC fonts");
             gpui_kit::init(cx);

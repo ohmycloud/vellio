@@ -17,8 +17,8 @@ static FONTS: LazyLock<Vec<Font>> = LazyLock::new(|| {
         .flat_map(|data| Font::iter(Bytes::new(data)))
         .collect();
     for data in [
-        include_bytes!("../assets/fonts/NotoSerifSC-Regular.ttf").as_slice(),
-        include_bytes!("../assets/fonts/NotoSerifSC-SemiBold.ttf").as_slice(),
+        crate::fonts::NOTO_SERIF_SC_REGULAR,
+        crate::fonts::NOTO_SERIF_SC_SEMIBOLD,
     ] {
         fonts.extend(Font::iter(Bytes::new(data)));
     }
