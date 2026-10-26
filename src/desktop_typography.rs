@@ -86,12 +86,15 @@ impl Fonts {
             // CSS system-ui precedes Helvetica/Arial in the English UI stack.
             ui_en: choose(&["Segoe UI"], ".SystemUIFont"),
             mono: choose(
-                &["JetBrains Mono", "Cascadia Mono", "Consolas"],
-                if cfg!(target_os = "macos") {
-                    "Menlo"
-                } else {
-                    "DejaVu Sans Mono"
-                },
+                &[
+                    "JetBrains Mono",
+                    "Cascadia Mono",
+                    "Consolas",
+                    "Menlo",
+                    "DejaVu Sans Mono",
+                    "Liberation Mono",
+                ],
+                ".SystemUIFont",
             ),
         }
     }
@@ -121,11 +124,11 @@ impl Fonts {
 /// input controls and rich-text code all retain EasyRead's typography.
 pub(super) fn apply_theme(zh: bool, cx: &mut App) {
     let fonts = Fonts::resolve(cx);
-    let theme = gpui_kit::component::Theme::global_mut(cx);
-    theme.font_family = if zh { fonts.ui_zh } else { fonts.ui_en };
-    theme.font_size = px(UI_SIZE);
-    theme.mono_font_family = fonts.mono;
-    gpui_kit::component::Theme::sync_base(cx);
+    gpui_kit::component::Theme::update(cx, |theme| {
+        theme.font_family = if zh { fonts.ui_zh } else { fonts.ui_en };
+        theme.font_size = px(UI_SIZE);
+        theme.mono_font_family = fonts.mono;
+    });
 }
 
 /// TextView applies its own foreground rather than inheriting the reader's
@@ -173,11 +176,12 @@ pub(super) fn reader_rich_style(
     .with_paragraph_indent_font_size(px(text_size))
     .with_unordered_list_marker_color(rgb(0x8c8579).into())
     .with_link_underline(false)
-    .with_heading(
+    .with_heading(move |level| {
         StyleRefinement::default()
             .font_weight(FontWeight::SEMIBOLD)
-            .line_height(relative(1.5)),
-    )
+            .line_height(relative(1.5))
+            .text_size(px(text_size * heading_scale(level)))
+    })
     .with_companion(
         StyleRefinement::default()
             .border_l_0()
@@ -208,7 +212,6 @@ pub(super) fn reader_rich_style(
         style.text.font_weight = Some(FontWeight::SEMIBOLD);
         style
     })
-    .with_heading_font_size(move |level, _| px(text_size * heading_scale(level)))
 }
 
 pub(super) fn text_scale(secondary: bool, caption: bool) -> f32 {

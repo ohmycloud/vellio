@@ -317,7 +317,11 @@ fn real_text_drag_and_local_companion_click_do_not_capture_the_page(cx: &mut Tes
             .selected_text()
             .trim_end_matches('\n')
             .to_owned();
-        assert!(!selected.is_empty() && selected.len() < "Second original.".len());
+        assert!(
+            !selected.is_empty() && selected.len() < "Second original.".len(),
+            "drag must select part of the second paragraph, got {selected:?}; bounds={bounds:?}; application selection={:?}",
+            r.selection.as_ref().map(|selection| &selection.quote)
+        );
         assert!("Second original.".contains(&selected));
         assert_eq!(
             r.selection.as_ref().unwrap().quote,

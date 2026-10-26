@@ -1,6 +1,6 @@
 # EasyRead local patch
 
-Source: crates.io `gpui-base` 0.6.6, Apache-2.0 (see `LICENSE-APACHE`).
+Source: crates.io `gpui-base` 0.8.0, Apache-2.0 (see `LICENSE-APACHE`).
 The application selects this copy through `[patch.crates-io]`.
 
 The upstream HTML renderer recognizes `<u>` but discards its decoration color.
@@ -20,7 +20,7 @@ This does not alter document text, native selection, or ordinary link handling.
 An actual-window test verifies distinct quote positions and width reflow.
 
 Selection geometry uses downstream affinity for characters and range starts at
-soft-wrap boundaries. GPUI 0.3.6's `position_for_index` places the shared caret
+soft-wrap boundaries. GPUI 0.3.9's `position_for_index` places the shared caret
 on the previous row; using it for a glyph omitted the next row's first character
 from drag selection. The shared correction covers TextView and plain text-run
 projection, highlight starts, touch-handle starts and annotation offsets. Range
@@ -75,17 +75,69 @@ Tests cover paragraph-wide and formula-only saved annotations, reload-style
 initialization, overlapping fill/underline colors, width/font reflow, clicks,
 live recoloring/removal and unchanged source/TeX selection.
 
-Typography alignment adds `TextViewStyle::with_heading` and `with_companion`.
-Heading refinement is applied after the level-specific defaults; companion
+Typography alignment uses upstream's level-aware `TextViewStyle::with_heading`
+callback and retains the local `with_companion` extension. Heading refinement is
+applied after the level-specific defaults; companion
 refinement applies only to display-only HTML blockquotes marked
 `data-easyread-companion="true"`. Ordinary HTML and Markdown blockquotes keep
 their existing appearance. Both refinements participate in style equality so
 selection/layout caches invalidate when typography changes. Parser and style
 fingerprint tests cover the distinction. See `../../docs/typography.md`.
 
+Mixed inline-flow wrapping also measures highlighted font weight/style using
+exactly the same runs as glyph painting. Previously bold prose next to an atomic
+formula could be wrapped in the regular body font and painted past the right
+clipping edge. Emphasis retains word boundaries; oversized words split only at
+grapheme boundaries, while existing inline-code sizing is preserved. A regression
+at three column widths checks shaped fragment bounds and exact UTF-8 coverage.
+See `../../docs/ask-ai-margin-layout.md`.
+
+Responsive block images with an explicit aspect ratio reserve their geometry
+in a separate relative wrapper; the decoded image fills it absolutely. GPUI's
+intrinsic image height otherwise undercounts the document while its paragraph
+paints at the responsive height, clipping later prose at a virtual row boundary.
+A decoder/resize regression checks that the following paragraph remains inside
+the full TextView bounds. A read-only Attention-book acceptance checks every
+paragraph and the next-page boundary at multiple reading widths and font sizes.
+
+## 0.8.0 rebase
+
+The rebase retains upstream's paragraph/inline layout caches, immutable painted
+copy projections, source-aware selection, range highlights, streaming revision
+coordination, Base Root and quiet-frame state paths. Local extensions are layered
+on those implementations, rather than restoring the 0.6 renderer.
+
+HTML paragraphs lack Markdown source-span keys. Their image/inline-flow element
+IDs therefore use retained paragraph state identity as a fallback: different
+paragraphs must not share a cached layout or a one-shot native formula element.
+Copies retaining that state retain the same ID. Application window tests cover
+multiple formulas, captions, annotations and inline editing together.
+
+Layout revision acknowledgement reads the live selection snapshot, not the
+subscription-delayed `is_selecting` flag. Otherwise a completed old gesture can
+defer a language-mode layout revision until the next drag ends, clearing that
+new drag. The application regression switches Original/Translation/Bilingual and
+checks an actual partial drag and its annotation quote.
+
+Copy's immutable painted layouts retain the local downstream soft-wrap affinity.
+The linear row-bounds walk reserves extra width for hard newlines only, not soft
+wraps, matching the corrected glyph-by-glyph oracle.
+
+HTML `<br>` retains 0.8's inline and trailing-break semantics. `<pre>` remains a
+local native `CodeBlock`, retaining language, whitespace, annotations, source
+colors and embedded inline images; the minifier preserves decoded text without
+inserting an extra newline after nested `<code>`.
+
+```sh
+CARGO_TARGET_DIR="$PWD/target" CARGO_PROFILE_DEV_DEBUG=0 RUST_MIN_STACK=16777216 \
+  cargo test --manifest-path vendor/gpui-base/Cargo.toml \
+  --features test-support --lib -- --test-threads=1
+```
+
 Modified source files: `src/text/style.rs`, `src/text/format/markdown.rs`,
 `src/text/format/html.rs`, `src/text/node.rs`,
 `src/text/state.rs`, `src/text/inline.rs`, `src/text/inline_flow.rs`, `src/text/text_view.rs`,
-`src/text_selection.rs`, `src/text/inline_object.rs`.
+`src/text_selection.rs`, `src/text/inline_object.rs`,
+`src/text/selection_adapter.rs`, `src/text/format/html5minify/mod.rs`.
 Remove this patch when an upstream version supports colored underlines and has
 passed EasyRead's annotation and native-window checks.

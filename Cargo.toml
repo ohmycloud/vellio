@@ -26,17 +26,18 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 semver = "1"
 markdown = "=1.0.0"
-gpui-kit = { version = "=0.6.6", optional = true }
+gpui-kit = { version = "=0.8.0", optional = true }
 syntect = { version = "5.3", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy"], optional = true }
 
 [features]
 default = []
-desktop = ["dep:gpui-kit", "dep:syntect", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation", "dep:gpui-macos"]
+desktop = ["dep:gpui-kit", "dep:syntect", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation", "dep:gpui-apple"]
 desktop-ui-tests = ["desktop", "gpui-kit/test-support"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Match EasyRead's grayscale antialiasing without CoreGraphics stroke thickening.
-gpui-macos = { package = "gpui-pre-macos", version = "=0.3.6", default-features = false, features = ["web-font-smoothing"], optional = true }
+# GPUI 0.3.9 moved the shared macOS rasterizer into gpui-pre-apple.
+gpui-apple = { package = "gpui-pre-apple", version = "=0.3.9", default-features = false, features = ["font-kit", "web-font-smoothing"], optional = true }
 objc2 = { version = "0.6", optional = true }
 objc2-app-kit = { version = "0.3", optional = true, default-features = false, features = ["std", "NSApplication", "NSImage", "NSResponder"] }
 objc2-foundation = { version = "0.3", optional = true, default-features = false, features = ["std", "NSData"] }
@@ -47,4 +48,4 @@ debug = 0
 [patch.crates-io]
 # Keep underline decoration colors through the native rich-text renderer.
 gpui-base = { path = "vendor/gpui-base" }
-gpui-pre-macos = { path = "vendor/gpui-pre-macos" }
+gpui-pre-apple = { path = "vendor/gpui-pre-apple" }

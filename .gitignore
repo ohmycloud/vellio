@@ -36,6 +36,8 @@ docs/
 !/docs/
 /docs/*
 !/docs/updates-and-releases.md
+!/docs/gpui-kit-0.8-upgrade.md
+!/docs/typography.md
 scripts/
 !/scripts/
 /scripts/*

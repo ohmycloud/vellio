@@ -14,6 +14,8 @@
 cargo run --locked --features desktop
 ```
 
+桌面端现已锁定 **GPUI Kit 0.8.0**（默认后端 gpui-pre 0.3.9），采用新版窗口与主题入口，保留批注、公式、双语排版及 macOS 字体补丁，并减少后台任务等待时的无效刷新。已有书籍无需重新导入；迁移内容、补丁和测试边界见 [GPUI Kit 0.8.0 升级记录](docs/gpui-kit-0.8-upgrade.md)。此前生成的 `.app` 需重新打包，单独更新源码不会替换旧应用。
+
 默认库独立于旧 EasyRead：macOS 为 `~/Library/Application Support/EasyReadGPUI/library`，Windows 为 `%LOCALAPPDATA%/EasyReadGPUI/library`，Linux 为 `~/.local/share/easyread-gpui/library`。可通过 `--library DIR` 或 `EASYREAD_LIBRARY` 指定位置。
 
 界面提供 PDF / EPUB 导入、旧论文目录复制迁入、文献切换、中文/英文对照、目录、正文搜索、原页翻页、段落/图表题注修订、带引文的笔记、进度保存、AI 对话和翻译。顶部提供「原文 / 译文 / 双语」切换，新文献默认显示原文；双语右侧下拉菜单可选「原文在前 / 译文在前」，可可靠配对的内容逐段交替显示，图片只保留一份，不再拼接两份整页；模式与顺序按书自动保存。点击段落或选中文字后，会弹出「高亮、下划线、Notes、Question、Ask AI、En / 译文、复制」工具栏；原文模式下点击 En / 译文，在该段原文下展开译文，再次点击收起；译文模式下则展开或收起该段原文，不影响其他段落；双语模式也可用该按钮只收起或重新展开当前段落的第二语言。未译段落不重复显示对照。独立成行的公式及编号不参与翻译或双语配对，只显示一次；行内公式随各自语言的正文保留。笔记和问题自动带入引文，Ask AI 将引文加入对话输入框。页级 PDF 中可可靠对齐的段落对照插入被点击段落之后，不把整页或图片重复追加；无法可靠对齐的复杂内容保留整块对照，详见 [页内段落语言对照修复](evidence/paragraph-language-companions.md)。公式在后台通过 MiTeX / Typst 编译，阅读器将 Typst 的字形轮廓和规则线直接绘制为 GPUI 原生矢量，不使用 PNG、PDF 裁图或 SVG 图像。行内公式带真实基线参与正文换行，支持整体复制 TeX；含公式的文本选区能弹出工具栏，临时选区与保存后的高亮均覆盖公式所在的完整行高；公式处的彩色下划线与正文衔接，点击公式可打开已有批注，见 [公式选区与高亮修复](evidence/math-selection.md)；编译失败时保留源码。

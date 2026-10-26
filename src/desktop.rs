@@ -18,7 +18,7 @@ use easyread_gpui::{
 use gpui_kit::base::{Disableable, TextSelection};
 use gpui_kit::{
     component::{
-        Icon, Root, Sizable,
+        Icon, Sizable,
         button::{Button, ButtonCustomVariant, ButtonVariants},
         input::{Input, InputEvent, InputState, Textarea, TextareaState},
         slider::{Slider, SliderEvent, SliderState},
@@ -763,6 +763,15 @@ impl ReaderView {
                             break;
                         }
                     }
+                }
+                // Keep waiting off the UI entity when the worker has no
+                // progress. Otherwise an 80ms poll needlessly invalidates the
+                // retained text/layout caches throughout a slow AI/PDF task.
+                if events.is_empty() && !disconnected {
+                    if this.upgrade().is_none() {
+                        break;
+                    }
+                    continue;
                 }
                 if this
                     .update(cx, |view, cx| {
@@ -4756,6 +4765,7 @@ impl ReaderView {
                 .child(
                     div().flex_1().min_w_0().child(
                         Slider::new(slider)
+                            .accessibility_label(label)
                             .bg(rgb(0x326879))
                             .text_color(rgb(0x326879)),
                     ),
@@ -6988,7 +6998,7 @@ pub fn run(raw: Value, library: Option<Library>, workspace: Option<Workspace>) {
                 }
             })
             .detach();
-            cx.open_window(
+            gpui_kit::open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                         None,
@@ -6997,10 +7007,8 @@ pub fn run(raw: Value, library: Option<Library>, workspace: Option<Workspace>) {
                     ))),
                     ..Default::default()
                 },
-                |window, cx| {
-                    let view = cx.new(|cx| ReaderView::new(raw, library, workspace, window, cx));
-                    cx.new(|cx| Root::new(view, window, cx))
-                },
+                cx,
+                |window, cx| cx.new(|cx| ReaderView::new(raw, library, workspace, window, cx)),
             )
             .expect("Cannot open Vellio window");
             cx.activate(true);
