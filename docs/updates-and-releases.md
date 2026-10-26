@@ -54,25 +54,44 @@ v0.1.0
 - `.cargo/bundle-config.toml` 仅由发布脚本显式加载，不改变普通开发构建。应用 crate 使用 `opt-level = "z"`、`codegen-units = 1`，运行时依赖使用 `opt-level = 3`，保留 GPUI、Typst、PDF／图像处理等热路径的依赖性能优化。本项目只有一个应用 crate，因此采用包级覆盖，不照搬 Zed 的工作区通配覆盖，也避免将构建脚本和过程宏无谓地提升为 O3。去除调试信息，但不采用 `panic = "abort"` 或删除运行时资源来换取体积。
 - macOS 用 `cargo rustc --bin easyread-gpui`，只向最终可执行文件传入 `-C link-arg=-Wl,-unexported_symbol,__R*`，不污染依赖或动态库链接。该模式针对 Rust v0 的 Mach-O 导出名，不隐藏 GPUI 所需的 Objective-C／C 符号；不是随意隐藏所有导出。
 - Windows／Linux 只使用该发布 profile，绝不传入 Apple 链接器参数。
-- macOS 打包额外在可执行文件的暂存副本上执行 `xcrun strip -x`，仅去掉本地符号表；Objective-C／C 外部符号仍保留，Cargo 原始产物不改写。`--keep-symbols` 可保留本地符号名用于诊断（不等于包含 DWARF 的调试包）。这是 Zed 构建／链接策略之外的额外减包措施；开发 `.app` 默认不 strip。
+- macOS 打包额外在可执行文件的暂存副本上执行 `xcrun strip -x`，仅去掉本地符号表；Objective-C／C 外部符号仍保留，Cargo 原始产物不改写。`--keep-symbols` 可保留本地符号名用于诊断（不等于包含 DWARF 的调试包）。这是 Zed 构建／链接策略之外的额外减包措施；显式 `--dev` 的开发包不 strip。
 - 字体、PDFium、MiTeX 和许可证继续完整保留，库文件也不被当作可执行文件 strip。strip 必须在签名前完成，失败则停止打包；签名、公证和校验和生成顺序不变，签名后不再改写二进制。
 
 ```sh
 VELLIO_VERSION=0.1.0 python3 scripts/build_release.py --target aarch64-apple-darwin --jobs 2
 python3 scripts/package_release.py --target aarch64-apple-darwin --version 0.1.0 --pdfium-dir assets/pdfium
-# 本机开发 .app 可显式选择同样的优化，仍为 ad-hoc 签名：
-sh scripts/package_macos.sh --release
+# 本机 .app 默认使用相同优化，仍为 ad-hoc 签名；--release 也是相同路径：
+sh scripts/package_macos.sh
+# 更快构建、体积更大的开发包必须显式选择：
+sh scripts/package_macos.sh --dev
 ```
+
+本机打包入口以前不带参数会选择 debug，容易让已经存在的 release 优化失效。现在默认 release，并在 strip 后签名、严格校验，再输出构建模式和最终大小；构建／strip／校验失败不会报告打包成功。`profile.dev.debug = 0` 只是不生成 DWARF 调试信息，不等于优化代码或清除本地符号表。普通 `cargo build` / `cargo build --release` 的配置不变，首次通过本机脚本打 release 包会花更多编译时间。不修改 `/Applications` 中的现有安装或用户书库。
 
 Intel macOS 及 Windows／Linux 必须使用匹配 target 的 PDFium wheel，不能沿用上述本机 ARM64 的 `assets/pdfium`。对比时分别报告可执行文件、展开后的 `.app` 和压缩安装包体积，并以相同源码的普通 release 为基线，不把 debug → release 的缩减冒充为上述优化效果。
 
-### 本机体积实测与验收边界
+### 当前版本：排除误打 debug 包的实测
+
+GPUI Kit 0.8.0、macOS ARM64、Rust 1.99.1。现场旧 `target/Vellio.app` 的文件总大小为 **322,732,305 bytes（322.73 MB / 307.78 MiB）**，其中主程序 **315,174,704 bytes**，PDFium **7,191,008 bytes**。旧脚本不带参数会将 `target/debug/easyread-gpui` 放进包，这是约 323 MB 的主因，不是图标或许可证太大。
+
+用当前源码经默认打包入口重新生成的 release `.app` 为 **131,250,705 bytes（131.25 MB / 125.17 MiB）**，主程序 **123,693,104 bytes**，PDFium 大小不变；整个包缩小 **59.33%**。新 DMG 为 **72,234,111 bytes（72.23 MB / 68.89 MiB）**。此处是现场 debug 旧包与当前 release 的交付大小对照，不能冒充相同源码下的新编译参数优化基准，也不代表内存、启动速度或帧率收益。
+
+- 本机 app：`target/Vellio.app`。
+- DMG 与 SHA-256：`target/package-size-current/Vellio-0.1.0-macos-aarch64.dmg` 及同名 `.sha256`。
+- 现场测量：`target/package-size-current/report.json`；这些均是忽略的本地构建产物。
+- 发布构建／打包契约测试 **17 项通过**，涵盖默认 release、显式 `--release`／`--dev`、参数拒绝、strip 不修改 Cargo 原产物、签名前 strip、构建失败保留旧包及 strip／签名校验失败不误报成功。
+- 实际挂载本次 DMG 后，校验 SHA-256、严格签名完整性、`--version`、中文分式／根号／求和 SVG、PDF/EPUB 导入、原生窗口启动冒烟均通过。测试从工程目录外运行，使用隔离 HOME 和合成测试书库，关闭自动更新，不调用付费模型、不打开用户书库；QA 进程及挂载均已结束。
+- 字体、PDFium、MiTeX/Typst、代码语法高亮和许可证未删除；未改全局 Cargo release 配置、未使用 `panic = "abort"` 或静默启用 GPUI Fast。尚未做完整手工阅读验收、跨平台验证、Developer ID 签名或公证，也未覆盖 `/Applications` 中的旧安装。
+
+### 此前 release 优化实验与验收边界
+
+以下为此前发布优化实验的历史记录，不是当前版本的重新测量，也不是将 debug → release 的差值算作发布优化收益。
 
 macOS ARM64、Rust 1.99.1，以同一份源码的普通 release 为基线；两组使用同一个 PDFium、图标、许可证及 ad-hoc 签名流程，不把开发构建体积混入对比。可执行文件 / 展开 `.app` / 压缩 DMG 分别从 **140.31 / 147.37 / 73.52 MiB** 降到 **116.69 / 123.75 / 68.45 MiB**，缩减 **16.83% / 16.03% / 6.90%**。仅 Zed 构建／链接调整的可执行文件为 136.06 MiB，其余来自本地符号表剥离。
 
 最终文件仍保留基线的全部 15 个非 Rust v0 外部符号，Rust v0 导出数由 14,134 降到 0。DMG 挂载后通过严格签名校验、`--version`、含中文的分式／根号／求和 SVG 导出、PDF／EPUB 导入和原生窗口启动冒烟；SHA-256 核验通过。构建／打包契约测试包含 strip 先于签名、失败不签名、不修改 Cargo 原始产物和保留符号选项。
 
-本地明细在 `target/package-size-qa/report.json`，包在 `target/package-size-qa/optimized-stripped/`；该目录为忽略的构建产物，不进入源码仓库。窗口启动冒烟不代替完整 UI／性能基准；Windows、Linux、Intel macOS 的真实构建和启动仍待对应 runner 验收。这里没有使用发行证书或进行 Apple 公证，也没有覆盖已安装的应用和用户书库。
+该次实验的本地明细输出到 `target/package-size-qa/report.json`，包输出到 `target/package-size-qa/optimized-stripped/`；这些是可清理的、忽略的构建产物，不进入源码仓库。窗口启动冒烟不代替完整 UI／性能基准；Windows、Linux、Intel macOS 的真实构建和启动仍待对应 runner 验收。这里没有使用发行证书或进行 Apple 公证，也没有覆盖已安装的应用和用户书库。
 
 ## macOS 签名：参考 EasyRead，但不照搬 Electron 更新器
 

@@ -112,9 +112,20 @@ cargo run --locked -- --library ./my-library --paper PAPER_ID --translate-pages 
 
 ### 安装包体积优化
 
+**macOS 本机打包现在默认生成优化 release 版**：运行 `sh scripts/package_macos.sh` 即可；仅需快速开发构建时显式传 `--dev`。旧脚本不带参数会打入 debug 二进制，即使设置 `profile.dev.debug = 0`，仍保留未优化代码和大量本地符号，因此可能出现约 323 MB 的 `.app`。打包脚本现在会显示构建模式、签名校验结果和包大小；本机包仍为 ad-hoc 签名，不等于正式发行签名或公证。
+
+本次当前版本（GPUI Kit 0.8.0、macOS ARM64）实测，使用十进制 MB：
+
+| 项目 | 现场旧 debug 包 | 本次优化 release 包 |
+| --- | ---: | ---: |
+| 整个 `.app` | 322.73 MB | 131.25 MB（缩小 59.33%） |
+| 主程序 | 315.17 MB | 123.69 MB |
+
+当前 DMG 为 **72.23 MB**；这是下载压缩体积，不是安装后的 `.app` 大小。此处的主要收益来自 debug → release，不能与下面普通 release → 优化 release 的历史实验混为一谈。新 `.app` 位于 `target/Vellio.app`，DMG、SHA-256 和测量记录位于 `target/package-size-current/`。已从挂载后的 DMG 验证签名完整性、版本、中文公式导出、PDF/EPUB 导入和原生窗口启动冒烟，未替换 `/Applications/Vellio.app` 或改动用户书库。
+
 发布构建参考 [Zed PR #65168](https://github.com/zed-industries/zed/pull/65168)：通过独立的 `.cargo/bundle-config.toml` 对应用自身使用 `opt-level = "z"` 和单个 codegen unit，Typst、PDF／图像处理、GPUI 等依赖仍使用 `opt-level = 3`。macOS 仅在最终可执行文件链接时隐藏 Rust v0 导出符号，保留 Objective-C／C 导出；所有优化均发生在签名和公证之前。不删字体、PDFium、公式引擎或许可证，也不改动书库。macOS 打包时额外用 `strip -x` 去除可执行文件的本地符号表，保留外部符号；诊断包可通过 `package_release.py --keep-symbols` 保留本地符号名。
 
-本机 macOS ARM64、Rust 1.99.1、相同源码实测（MiB；基线为普通 release，不是 debug）：
+此前发布优化实验的记录（macOS ARM64、Rust 1.99.1、实验内相同源码；MiB；基线为普通 release，不是 debug，非当前版本重新测量）：
 
 | 项目 | 普通 release | 优化发布包 | 缩减 |
 | --- | ---: | ---: | ---: |
@@ -128,11 +139,13 @@ cargo run --locked -- --library ./my-library --paper PAPER_ID --translate-pages 
 # 与发行 workflow 共用；其他平台传入相应 target。
 VELLIO_VERSION=0.1.0 python3 scripts/build_release.py --target aarch64-apple-darwin --jobs 2
 python3 scripts/package_release.py --target aarch64-apple-darwin --version 0.1.0 --pdfium-dir assets/pdfium
-# 仅生成本机临时签名 .app：
-sh scripts/package_macos.sh --release
+# 本机优化 .app，默认即 release；--release 仍作为兼容参数保留：
+sh scripts/package_macos.sh
+# 只在开发时使用更快构建、但体积更大的 debug 包：
+sh scripts/package_macos.sh --dev
 ```
 
-普通 `cargo build`、`cargo build --release` 和不带参数的 `package_macos.sh` 保持原有行为；要获得此处的减包效果，请使用上述发布入口。Linux／Windows 不传入 macOS 链接器参数，实际体积和启动仍须在对应平台验收。
+普通 `cargo build` 和 `cargo build --release` 保持原有行为。只有上述发布入口及本机打包脚本加载独立优化配置；首次 release 编译会比开发构建更慢。Linux／Windows 不传入 macOS 链接器参数，实际体积和启动仍须在对应平台验收。
 
 ## 验证与本地 app
 
@@ -147,7 +160,7 @@ cargo run --locked --features desktop -- --library target/rust-smoke/library --p
 sh scripts/package_macos.sh
 ```
 
-测试会启动随机 loopback HTTP 端口作为明确的 AI 测试桩，不调用真实模型。`rust_smoke` 使用 Rust 生成的 PDF 和合成旧数据，重建测试库中的 paper.json；测试数据位于 `target/rust-smoke`。示例结果写入 `evidence/rust-smoke.json`、`evidence/rust-state.json`、`evidence/rust-formula.svg`。本地开发 app 位于 `target/Vellio.app`，捆绑 PDFium，字体与 MiTeX/Typst 资源已内嵌。该包仅使用本地临时签名，未经发行签名和公证，尚未作为发行版发布。
+测试会启动随机 loopback HTTP 端口作为明确的 AI 测试桩，不调用真实模型。`rust_smoke` 使用 Rust 生成的 PDF 和合成旧数据，重建测试库中的 paper.json；测试数据位于 `target/rust-smoke`。示例结果写入 `evidence/rust-smoke.json`、`evidence/rust-state.json`、`evidence/rust-formula.svg`。本地 app 位于 `target/Vellio.app`，默认是优化 release 构建（快速开发可用 `--dev`），捆绑 PDFium，字体与 MiTeX/Typst 资源已内嵌。该包仅使用本地临时签名，未经发行签名和公证，尚未作为发行版发布。
 
 macOS 应用包采用橙喙鹈鹕配雾蓝灰背景的图标（方案 A），覆盖 16–1024 px 的普通与 Retina 尺寸，16 px 使用强化眼睛与嘴线的小尺寸版本。文献库顶部同步显示全彩图标，浅色 / 深色主题都不重新着色。可编辑源文件与生成方法见 [应用图标](assets/icons/README.md)。
 

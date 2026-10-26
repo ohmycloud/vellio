@@ -1,21 +1,27 @@
 #!/bin/sh
 set -eu
 # Run from project root. PDFium and all Rust/Typst resources travel with the app.
-# Default: fast development build. --release: size-optimized distribution build.
+# Default: size-optimized release build. Use --dev only for a fast local build.
 if [ "$#" -gt 1 ]; then
-    printf 'Usage: sh scripts/package_macos.sh [--release]\n' >&2
+    printf 'Usage: sh scripts/package_macos.sh [--release|--dev]\n' >&2
     exit 2
 fi
-if [ "${1:-}" = "--release" ]; then
+case "${1---release}" in
+    --release) mode=release ;;
+    --dev) mode=development ;;
+    *)
+        printf 'Usage: sh scripts/package_macos.sh [--release|--dev]\n' >&2
+        exit 2
+        ;;
+esac
+if [ "$mode" = release ]; then
     target=$(rustc -vV | awk '/^host:/ {print $2}')
     python3 scripts/build_release.py --target "$target"
     binary="target/$target/release/easyread-gpui"
-elif [ "$#" -eq 0 ]; then
+else
+    printf 'Development bundle: larger and unoptimized; omit --dev for a smaller release bundle.\n' >&2
     cargo build --locked --features desktop
     binary=target/debug/easyread-gpui
-else
-    printf 'Usage: sh scripts/package_macos.sh [--release]\n' >&2
-    exit 2
 fi
 app=target/Vellio.app
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/licenses"
@@ -44,9 +50,11 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 PLIST
 # Keep development symbol names, but remove local symbols in release bundles.
 # Never modify the executable after signing, and leave PDFium untouched.
-if [ "${1:-}" = "--release" ]; then
+if [ "$mode" = release ]; then
     xcrun strip -x "$app/Contents/MacOS/Vellio"
 fi
-# Seal the development bundle locally; no distribution identity is required.
+# Both modes are locally signed, not Developer ID signed or notarized releases.
 codesign --force --sign - "$app"
-printf 'Local macOS development bundle: %s\n' "$app"
+codesign --verify --deep --strict "$app"
+printf 'Local macOS %s bundle (ad-hoc signed): %s\n' "$mode" "$app"
+du -sh "$app"
