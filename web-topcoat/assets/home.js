@@ -1,4 +1,27 @@
 (() => {
+  const importForm = document.querySelector('.upload-compact');
+  if (importForm) {
+    const file = importForm.elements.book;
+    const button = importForm.querySelector('[data-import-book]');
+    // Open from the user's button activation, not a submit with an empty,
+    // hidden required field (which cannot open the native file chooser).
+    button.addEventListener('click', () => file.click());
+    file.addEventListener('change', () => {
+      if (file.files.length) importForm.requestSubmit();
+    });
+    importForm.addEventListener('submit', () => {
+      button.disabled = true;
+      button.textContent = '导入中…';
+      importForm.setAttribute('aria-busy', 'true');
+    });
+    // Back navigation may restore this form from the browser's page cache.
+    window.addEventListener('pageshow', () => {
+      importForm.reset();
+      button.disabled = false;
+      button.textContent = '导入';
+      importForm.removeAttribute('aria-busy');
+    });
+  }
   const list = document.getElementById('home-list');
   if (!list) return;
   const buttons = [...document.querySelectorAll('[data-filter]')];
@@ -18,7 +41,7 @@
     master.checked = visible.length > 0 && visible.every(input => selected.has(input.value));
     master.indeterminate = visible.some(input => selected.has(input.value)) && !master.checked;
     batch.elements.ids.value = [...selected].join(',');
-    document.getElementById('batch-count').textContent = `${selected.size} 篇已选`;
+    document.getElementById('batch-count').textContent = `${selected.size} 项已选`;
     for (const button of batch.querySelectorAll('button')) button.disabled = !selected.size;
     batch.querySelector('.batch-restore').hidden = filter !== 'trash';
     batch.querySelector('.batch-confirm').hidden = filter === 'trash';
@@ -47,7 +70,7 @@
       row.hidden = !matches || !`${row.dataset.title} ${row.dataset.details} ${row.dataset.folderNames}`.includes(query);
       if (!row.hidden) shown++;
     }
-    count.textContent = `${shown} 篇`;
+    count.textContent = `${shown} 项`;
     document.getElementById('home-empty').hidden = shown !== 0;
     updateBatch();
   }
@@ -75,7 +98,7 @@
     const action = event.submitter?.value;
     if (!selected.size || (['assign','remove-folder'].includes(action) && !batch.elements.folder.value)) {
       event.preventDefault();
-      window.alert(selected.size ? '请先选择文件夹' : '请先选择文献');
+      window.alert(selected.size ? '请先选择文件夹' : '请先选择书籍');
     }
   });
   batch.querySelector('[data-batch-cite]').addEventListener('click', async () => {

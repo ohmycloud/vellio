@@ -1,8 +1,12 @@
 //! Local-only Topcoat experiment: server-side Vellio parser/storage, DOM reader.
 //! Not a public deployment: no accounts, cross-device sync, or complete desktop rendering.
+mod book_images;
 mod math_svg;
 mod model_settings;
+mod note_markdown;
 mod paragraphs;
+mod reader_controls;
+mod table_of_contents;
 mod web_updates;
 use easyread_gpui::{
     ai, annotations, formats::epub, formula, library_home, model::ReaderState,
@@ -11,7 +15,7 @@ use easyread_gpui::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::PathBuf,
     sync::{Arc, Mutex, OnceLock, atomic::AtomicBool},
@@ -20,13 +24,34 @@ use topcoat::{
     Error, Result,
     context::Cx,
     router::{
-        BodyLimit, RouterBuilderDiscoverExt,
+        Body, BodyLimit, Next, RouterBuilderDiscoverExt,
         content::{Css, Form, Html, Js, Json, multipart::Multipart},
         error::{SeeOther, bad_request, not_found, see_other},
-        module_router, page, path_param, query_params, route,
+        layer, module_router, page, path_param, query_params, response::Response, route,
     },
-    view::{Unescaped, View, view},
+    view::{Unescaped, View, element_id, view},
 };
+
+// A layout-local context would not reach nested page components. Set the locale
+// before rendering, as required by Topcoat 0.11's request-scoped l10n API.
+#[layer]
+async fn locale_layer(cx: &Cx, body: Body, next: Next<'_>) -> Result<Response> {
+    let mut response = next
+        .run(&cx.with(reader_controls::request_locale(cx)), body)
+        .await?;
+    if response
+        .headers()
+        .get(topcoat::router::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/html"))
+    {
+        response.headers_mut().append(
+            topcoat::router::header::VARY,
+            topcoat::router::HeaderValue::from_static("Accept-Language"),
+        );
+    }
+    Ok(response)
+}
 
 static LIBRARY: OnceLock<Library> = OnceLock::new();
 static HOME_PREFS_LOCK: Mutex<()> = Mutex::new(());
@@ -223,6 +248,7 @@ struct RenderBlock {
     original: String,
     translated: String,
     src: String,
+    alt: String,
     untranslated: bool,
     page_block: bool,
     paired: String,
@@ -254,6 +280,9 @@ struct RenderNote {
 }
 
 fn cleaned(html: &str) -> String {
+    cleaned_html(html, None)
+}
+fn cleaned_html(html: &str, book: Option<&str>) -> String {
     // Keep only the four application-owned underline colors; never allow arbitrary CSS.
     let mut html = html.to_owned();
     for (name, ink) in [
@@ -270,6 +299,24 @@ fn cleaned(html: &str) -> String {
     let mut sanitizer = ammonia::Builder::new();
     sanitizer.url_relative(ammonia::UrlRelative::PassThrough);
     sanitizer.add_tags(&["img", "mark", "u", "span"]);
+    if let Some(book) = book {
+        let book = book.to_owned();
+        sanitizer.add_url_schemes(&["data"]);
+        sanitizer.attribute_filter(move |tag, attribute, value| {
+            use std::borrow::Cow;
+            if tag == "img" && attribute == "src" {
+                if book_images::inline_png(value) {
+                    return Some(Cow::Borrowed(value));
+                }
+                return book_images::html_url(&book, value).map(Cow::Owned);
+            }
+            // Enabling raster data URLs must not enable data: links or other uses.
+            if value.trim_start().to_ascii_lowercase().starts_with("data:") {
+                return None;
+            }
+            Some(Cow::Borrowed(value))
+        });
+    }
     sanitizer.add_generic_attributes(&[
         "class",
         "lang",
@@ -278,6 +325,7 @@ fn cleaned(html: &str) -> String {
     ]);
     sanitizer.add_tag_attributes("img", &["src", "alt", "width", "height"]);
     sanitizer.add_tag_attributes("mark", &["color"]);
+    sanitizer.add_tag_attributes("p", &["data-vellio-equation", "data-vellio-footnote"]);
     sanitizer.add_tag_attributes("blockquote", &["data-easyread-companion"]);
     sanitizer.add_tag_attributes("u", &["data-underline"]);
     sanitizer.add_tag_attributes(
@@ -293,7 +341,27 @@ fn display_blocks(
     page: usize,
     pdf: bool,
     source_pdf: Option<&std::path::Path>,
+    book_id: &str,
 ) -> Vec<RenderBlock> {
+    // Reuse the PDF presentation's inline-image identities, not just its HTML:
+    // native crops replace their legacy standalone blocks rather than duplicating them.
+    let mut native = HashMap::new();
+    if let Some(path) = source_pdf {
+        let blocks: Vec<_> = state.paper.blocks.iter()
+            .filter(|block| block.source_kind == "pdf-text" && block.page == page)
+            .collect();
+        let requests: Vec<_> = blocks.iter().map(|block| (block.page, block.en.clone())).collect();
+        if let Ok(presentations) = pdf::code_presentations(path, &requests) {
+            for (block, presentation) in blocks.into_iter().zip(presentations) {
+                if let Ok(Some(presentation)) = presentation {
+                    native.insert(block.id.clone(), presentation);
+                }
+            }
+        }
+    }
+    let inline_figures: HashSet<_> = native.values()
+        .flat_map(|presentation| presentation.inline_figures.iter().map(String::as_str))
+        .collect();
     state
         .paper
         .blocks
@@ -305,6 +373,7 @@ fn display_blocks(
                 .as_u64()
                 .unwrap_or(1) as usize;
             if position != page
+                || (b.kind == "figure" && inline_figures.contains(b.id.as_str()))
                 || !matches!(
                     b.kind.as_str(),
                     "heading" | "para" | "note" | "figure" | "table" | "list" | "math"
@@ -312,11 +381,11 @@ fn display_blocks(
             {
                 return None;
             }
-            let src = source["src"]
-                .as_str()
-                .filter(|path| path.starts_with("images/") || path.starts_with("pages/"))
-                .unwrap_or("")
-                .to_owned();
+            let src = source["src"].as_str()
+                .and_then(|path| book_images::url(book_id, path))
+                .unwrap_or_default();
+            let alt = source["alt"].as_str().filter(|alt| !alt.trim().is_empty())
+                .unwrap_or("插图").to_owned();
             let original = if b.kind == "math" && !b.tex.is_empty() {
                 formula::native_html(&b.tex, true)
             } else if b.kind == "figure" && !src.is_empty() {
@@ -324,14 +393,17 @@ fn display_blocks(
             } else if b.source_kind == "pdf-text" {
                 // Desktop's native PDF geometry recovery is reusable here as HTML.
                 // Only accept it when its extracted text matches the stored block.
-                source_pdf
-                    .and_then(|path| pdf::code_html(path, b.page, &b.en).ok().flatten())
+                native.get(&b.id).map(|presentation| presentation.html.clone())
                     .unwrap_or_else(|| formula::native_markdown_html(&state.original_markdown(b)))
             } else {
                 epub::source_html(source, b, state, true)
                     .unwrap_or_else(|| formula::native_markdown_html(&state.original_markdown(b)))
             };
-            let untranslated = b.zh.trim().is_empty() && state.text(&b.id, &b.zh, &b.en) == b.en;
+            let untranslated = if b.kind == "figure" {
+                b.caption_zh.trim().is_empty() && state.caption(b) == b.caption_en
+            } else {
+                b.zh.trim().is_empty() && state.text(&b.id, &b.zh, &b.en) == b.en
+            };
             let active = state.text(&b.id, &b.zh, &b.en);
             let translated = if untranslated || (b.kind == "math" && !b.tex.is_empty()) {
                 original.clone()
@@ -356,6 +428,11 @@ fn display_blocks(
                 .filter(|_| b.kind != "heading")
                 .map(str::to_owned)
                 .unwrap_or_else(|| formula::native_markdown_html(&state.markdown(b, false)))
+            };
+            let translated = if b.source_kind == "pdf-text" {
+                paragraphs::inherit_footnotes(&original, &translated)
+            } else {
+                translated
             };
             let edit_key = if matches!(b.kind.as_str(), "figure" | "table") {
                 format!("{}#caption", b.id)
@@ -413,19 +490,20 @@ fn display_blocks(
                     true,
                     (page_block && footer).then_some(b.page),
                 )
-                .map(|layout| cleaned(&layout.render(&layout.all_pairs())))
+                .map(|layout| cleaned_html(&layout.render(&layout.all_pairs()), Some(book_id)))
                 .unwrap_or_default()
             } else {
                 String::new()
             };
-            let original = cleaned(&original_decorated);
-            let translated = cleaned(&translated_decorated);
+            let original = cleaned_html(&original_decorated, Some(book_id));
+            let translated = cleaned_html(&translated_decorated, Some(book_id));
             Some(RenderBlock {
                 id: b.id.clone(),
                 kind: b.kind.clone(),
                 original,
                 translated,
                 src,
+                alt,
                 untranslated,
                 page_block,
                 paired,
@@ -541,10 +619,10 @@ async fn home() -> Result<impl View> {
         .collect();
     Ok(view! {
         <!DOCTYPE html>
-        <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>"Vellio · 文献库"</title><link rel="stylesheet" href="/reader.css"><script src="/home.js" defer="defer"></script></head>
+        <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>"Vellio · 书库"</title><link rel="stylesheet" href="/reader.css"><script src="/home.js" defer="defer"></script></head>
         <body class="library-home"><div class="home-layout">
             <aside class="home-sidebar"><div class="home-brand">"▤ "<strong>"Vellio"</strong></div><p class="eyebrow">"F O L D E R S"</p>
-                <nav aria-label="书库筛选"><button class="active" data-filter="all">"▤　全部文献"</button><button data-filter="reading">"◐　在读"</button><button data-filter="unread">"○　未读"</button><button data-filter="done">"✓　已读"</button><button data-filter="starred">"☆　收藏"</button><button data-filter="questions">"?　待解答问题"</button><button data-filter="trash">"⌑　回收站"</button></nav>
+                <nav aria-label="书库筛选"><button class="active" data-filter="all">"▤　全部书籍"</button><button data-filter="reading">"◐　在读"</button><button data-filter="unread">"○　未读"</button><button data-filter="done">"✓　已读"</button><button data-filter="starred">"☆　收藏"</button><button data-filter="questions">"?　待解答问题"</button><button data-filter="trash">"⌑　回收站"</button></nav>
                 <p class="eyebrow folder-heading">"文件夹"</p><nav class="folder-nav" aria-label="自定义文件夹">
                 for folder in folders.clone() { <div class="folder-entry"><button type="button" data-filter=(folder.id.clone()) data-folder-drop=(folder.id.clone())>(folder.name.clone())</button>
                     <details class="folder-more"><summary aria-label=(format!("管理文件夹 {}",folder.name))>"···"</summary><div>
@@ -553,16 +631,16 @@ async fn home() -> Result<impl View> {
                     </div></details>
                 </div> }
                 </nav><details class="add-folder"><summary>"＋ 新建文件夹"</summary><form method="post" action="/library/folders"><input type="hidden" name="action" value="create"><input name="name" maxlength="80" required=(true) placeholder="文件夹名称" aria-label="文件夹名称"><button>"创建"</button></form></details>
-                <p class="sidebar-hint">"拖动或批量归档文献；模型设置见右上角。"</p>
+                <p class="sidebar-hint">"支持 PDF / EPUB 书籍与论文；可拖动或批量归档。"</p>
             </aside>
-            <main class="home-main"><header class="home-top"><h1>"全部文献"</h1><span id="home-count"></span><span class="spacer"></span>
+            <main class="home-main"><header class="home-top"><h1>"全部书籍"</h1><span id="home-count"></span><span class="spacer"></span>
                 <a class="home-model-link" href="/settings?tab=about" aria-label="关于与软件更新">"? 帮助与更新"</a><a class="home-model-link" href="/settings" aria-label="打开模型设置">"⚙ 模型设置"</a>
-                <input id="library-search" type="search" placeholder="搜索标题、作者…" aria-label="搜索文献">
+                <input id="library-search" type="search" placeholder="搜索标题、作者…" aria-label="搜索书籍与论文">
                 <label>"排序 "<select id="library-sort"><option value="recent">"最近阅读"</option><option value="added">"最近添加"</option><option value="year">"发表年份"</option><option value="title">"标题"</option></select></label>
-                <form class="upload-compact" method="post" action="/import" enctype="multipart/form-data"><label class="import-label">"＋ 导入 PDF / EPUB"<input type="file" name="book" accept=".pdf,.epub,application/pdf,application/epub+zip" required=(true)></label><button type="submit">"导入"</button></form>
+                <form class="upload-compact" method="post" action="/import" enctype="multipart/form-data"><input type="file" name="book" accept=".pdf,.epub,application/pdf,application/epub+zip" required=(true) hidden=(true)><button type="button" data-import-book="true" title="导入 PDF / EPUB">"导入"</button></form>
             </header><p class="home-warning">"本机实验书库；不要公开服务或与桌面程序同时修改同一本书。"</p>
             <form id="batch-form" class="batch-bar" method="post" action="/library/batch"><input type="hidden" name="ids" value="">
-                <label class="batch-master"><input type="checkbox" id="batch-select-all" aria-label="全选或取消当前文献"></label><strong id="batch-count">"0 篇已选"</strong><span class="spacer"></span>
+                <label class="batch-master"><input type="checkbox" id="batch-select-all" aria-label="全选或取消当前书目"></label><strong id="batch-count">"0 项已选"</strong><span class="spacer"></span>
                 if !folders.is_empty() { <select name="folder" aria-label="批量选择文件夹"><option value="">"文件夹"</option>for folder in folders.clone() { <option value=(folder.id)>(folder.name)</option> }</select><button type="submit" name="action" value="assign">"加入收藏夹"</button><button type="submit" name="action" value="remove-folder">"移出文件夹"</button> }
                 <select name="status" aria-label="批量阅读状态"><option value="reading">"在读"</option><option value="unread">"未读"</option><option value="done">"已读"</option></select><button type="submit" name="action" value="status">"设置状态"</button>
                 <button type="button" data-batch-cite="true">"复制引文"</button>
@@ -583,7 +661,7 @@ async fn home() -> Result<impl View> {
                     </div>
                 </div>
             </article> }
-            </div><p id="home-empty" hidden=(true)>"当前筛选没有文献。"</p>
+            </div><p id="home-empty" hidden=(true)>"当前筛选没有书籍。"</p>
             </main></div></body></html>
     })
 }
@@ -592,7 +670,7 @@ async fn home() -> Result<impl View> {
 async fn library_batch(Form(input): Form<BatchAction>) -> Result<SeeOther> {
     let ids: Vec<_> = input.ids.split(',').filter(|id| !id.is_empty()).collect();
     if ids.is_empty() || ids.len() > 200 {
-        return Err(bad_request("请选择 1 至 200 篇文献").into());
+        return Err(bad_request("请选择 1 至 200 项书目").into());
     }
     let books = ids
         .iter()
@@ -961,7 +1039,7 @@ async fn read(cx: &Cx) -> Result<impl View> {
                 body_html: if failed && body.trim().is_empty() {
                     "<p>模型请求失败，请检查本机服务日志和模型配置后重试。</p>".to_owned()
                 } else {
-                    cleaned(&formula::native_markdown_html(body))
+                    note_markdown::render(body)
                 },
                 failed,
             })
@@ -979,11 +1057,24 @@ async fn read(cx: &Cx) -> Result<impl View> {
     } else {
         None
     };
-    let blocks = tokio::task::spawn_blocking({
+    let (blocks, book_contents) = tokio::task::spawn_blocking({
         let raw = raw.clone();
         let state = state.clone();
         let notes = notes.clone();
-        move || display_blocks(&raw, &state, &notes, number, pdf, source_pdf.as_deref())
+        let book_id = id.to_string();
+        move || {
+            let blocks = display_blocks(
+                &raw,
+                &state,
+                &notes,
+                number,
+                pdf,
+                source_pdf.as_deref(),
+                &book_id,
+            );
+            let contents = table_of_contents::load(&raw, &state, source_pdf.as_deref(), total);
+            (blocks, contents)
+        }
     })
     .await?;
     let paper_blocks = raw["paper"]["blocks"].as_array();
@@ -1009,9 +1100,7 @@ async fn read(cx: &Cx) -> Result<impl View> {
                     kind: n["kind"].as_str().unwrap_or("note").into(),
                     quote: n["quote"].as_str().unwrap_or("").into(),
                     body: n["body"].as_str().unwrap_or("").into(),
-                    body_html: cleaned(&formula::native_markdown_html(
-                        n["body"].as_str().unwrap_or(""),
-                    )),
+                    body_html: note_markdown::render(n["body"].as_str().unwrap_or("")),
                     created: n["created"].as_str().unwrap_or("").into(),
                     color: n["color"].as_str().unwrap_or("yellow").into(),
                     style: n["style"].as_str().unwrap_or("highlight").into(),
@@ -1028,9 +1117,7 @@ async fn read(cx: &Cx) -> Result<impl View> {
                         })
                         .map(|entry| NoteReply {
                             by: entry["by"].as_str().unwrap_or("AI").to_owned(),
-                            body_html: cleaned(&formula::native_markdown_html(
-                                entry["body"].as_str().unwrap_or(""),
-                            )),
+                            body_html: note_markdown::render(entry["body"].as_str().unwrap_or("")),
                         })
                         .collect(),
                     page,
@@ -1058,74 +1145,46 @@ async fn read(cx: &Cx) -> Result<impl View> {
     let notes_action = format!("/read/{id}/notes");
     let pdf_page = format!("/read/{id}/pages/page-{number:03}.webp");
     let mode_class = format!("paper mode-{mode} original-first");
-    let contents = (number.saturating_sub(5).max(1)..=(number + 5).min(total)).collect::<Vec<_>>();
-    let headings: Vec<_> = state
-        .paper
-        .blocks
-        .iter()
-        .enumerate()
-        .filter(|(_, b)| b.kind == "heading")
-        .filter_map(|(index, b)| {
-            let page = raw["paper"]["blocks"][index][if pdf { "page" } else { "chapter" }]
-                .as_u64()? as usize;
-            Some((
-                b.id.clone(),
-                state
-                    .text(&b.id, &b.zh, &b.en)
-                    .chars()
-                    .take(120)
-                    .collect::<String>(),
-                page,
-            ))
-        })
-        .take(500)
-        .collect();
+    let contents_html = table_of_contents::render(&book_contents, &id, &mode, number);
     Ok(view! {
         <!DOCTYPE html>
         <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-            <title>(title.clone())" · Vellio"</title><link rel="stylesheet" href="/reader.css"><link rel="stylesheet" href="/margin-editor.css"><script src="/reader-updates.js" defer="defer"></script><script src="/margin-editor.js" defer="defer"></script><script src="/reader.js" defer="defer"></script>
+            <title>(title.clone())" · Vellio"</title><link rel="stylesheet" href="/reader.css"><link rel="stylesheet" href="/popover.css"><link rel="stylesheet" href="/margin-editor.css"><script src="/reader-updates.js" defer="defer"></script><script src="/margin-editor.js" defer="defer"></script><script src="/reader.js" defer="defer"></script>
         </head><body>
             <nav class="top" aria-label="阅读工具栏">
-                <a class="library-button icon-button" href="/" title="文献库" aria-label="文献库">"▤"</a>
-                <details class="contents-menu"><summary class="icon-button" title="目录与页码" aria-label="目录与页码">"☷"</summary>
-                    <div class="contents-popover"><strong>(if pdf { "页码" } else { "章节" })</strong>
-                        <div class="contents-pages">
-                            if number > 6 { <a href=(format!("/read/{id}?page=1&mode={mode}"))>"1"</a><span>"…"</span> }
-                            for p in contents { <a class=(if p == number { "current" } else { "" }) href=(format!("/read/{id}?page={p}&mode={mode}"))>(p)</a> }
-                            if number + 5 < total { <span>"…"</span><a href=(format!("/read/{id}?page={total}&mode={mode}"))>(total)</a> }
-                        </div>
-                        if !headings.is_empty() { <div class="contents-sections">for (anchor, label, p) in headings { <a href=(format!("/read/{id}?page={p}&mode={mode}#block-{anchor}"))><small>(if pdf { "p." } else { "章节" })(p)</small>(label)</a> }</div> }
-                        <form method="get" action=(format!("/read/{id}"))><input type="hidden" name="mode" value=(mode.clone())><label>"跳转到 "<input type="number" name="page" min="1" max=(total.to_string()) value=(number.to_string())></label><button type="submit">"前往"</button></form>
+                <a class="library-button icon-button" href="/" title="书库" aria-label="书库">"▤"</a>
+                let contents_id = element_id(cx);
+                <div class="contents-menu"><button type="button" popovertarget=(&contents_id) class="icon-button" title="目录" aria-label="目录">"☷"</button>
+                    <div id=(&contents_id) popover="auto" class="contents-popover vellio-popover" aria-label="书籍目录"><strong>"目录"</strong>
+                        if contents_html.is_empty() {
+                            <p class="contents-empty">"原书未提供可用目录。"</p>
+                        } else {
+                            if book_contents.inferred { <p class="contents-hint">"原书未提供导航目录，以下按正文标题显示。"</p> }
+                            <nav class="contents-sections" aria-label="书籍章节">(Unescaped::new_unchecked(contents_html))</nav>
+                        }
                     </div>
-                </details>
+                </div>
                 <span class="book-title" title=(title.clone())>(title)</span><span class="location-label">(position)</span><span class="spacer"></span>
                 <div class="page-nav"><a class="icon-button" href=(prev) aria-label="上一页或章节" aria-disabled=(number <= 1)>"‹"</a><a class="icon-button" href=(next) aria-label="下一页或章节" aria-disabled=(number >= total)>"›"</a></div>
                 <div class="mode-control" role="group" aria-label="阅读模式">
                     for (name, label) in [("original", "原文"), ("translation", "译文"), ("bilingual", "双语")] {
                         <a class=(if mode == name { "selected" } else { "" }) aria-current=(if mode == name { "page" } else { "false" }) href=(format!("/read/{id}?page={number}&mode={name}"))>(label)</a>
                     }
-                    <details class="order-menu"><summary aria-label="双语显示顺序" title="双语显示顺序">"⌄"</summary><div class="order-options"><button type="button" data-reading-order="source" aria-pressed="true">"原文在前"</button><button type="button" data-reading-order="translation" aria-pressed="false">"译文在前"</button></div></details>
+                    let order_id = element_id(cx);
+                    <div class="order-menu"><button type="button" popovertarget=(&order_id) aria-label="双语显示顺序" title="双语显示顺序">"⌄"</button><div id=(&order_id) popover="auto" class="order-options vellio-popover" data-align="end" aria-label="双语显示顺序"><button type="button" data-reading-order="source" aria-pressed="true" popovertarget=(&order_id) popovertargetaction="hide">"原文在前"</button><button type="button" data-reading-order="translation" aria-pressed="false" popovertarget=(&order_id) popovertargetaction="hide">"译文在前"</button></div></div>
                 </div>
                 if pdf { <button type="button" class="tool-button" id="source-toggle" aria-expanded="false" aria-controls="source-panel">"▣ PDF"</button> }
                 <button type="button" class="tool-button" id="notes-toggle" aria-expanded="false" aria-controls="notes-drawer">"▤ Notes"</button>
                 if ask_available { <button class="tool-button" type="button" id="chat-toggle" aria-expanded="false" aria-controls="chat-panel">"✳ Ask AI"</button> }
                 if translating { <form class="translate-action" method="post" action=(format!("/read/{id}/translate/cancel"))><input type="hidden" name="page" value=(number)><input type="hidden" name="mode" value=(mode.clone())><button class="tool-button">"取消翻译"</button></form> }
                 <span id="job-status" class="job-status" data-active=(translating.to_string()) data-state=(job_state.clone())>(if translating { job_progress } else if job_state == "partial" { "翻译中断，可重试".to_owned() } else { String::new() })</span>
-                <details class="appearance-menu"><summary class="tool-button" title="阅读外观">"Aa"</summary>
-                    <div class="appearance-popover"><strong>"阅读外观"</strong>
-                        <label>"字体"<select id="reader-font"><option value="noto">"宋体"</option><option value="system">"系统衬线"</option><option value="sans">"无衬线"</option></select></label>
-                        <label>"字号"<input id="reader-size" type="range" min="14" max="32" value="21"><output for="reader-size">"21"</output></label>
-                        <label>"行宽"<input id="reader-width" type="range" min="25" max="60" value="35"><output for="reader-width">"35"</output></label>
-                        <label>"行距"<input id="reader-leading" type="range" min="12" max="26" value="19"><output for="reader-leading">"1.9"</output></label>
-                        <label class="check"><input id="reader-margin" type="checkbox" checked=(true)>"显示页边笔记"</label>
-                    </div>
-                </details>
+                reader_controls::appearance_menu()
             </nav>
             <div class="reading-progress" role="progressbar" aria-label="阅读进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span></span></div>
             <div class="reader-body" data-book-id=(id.to_string()) data-page=(number.to_string()) data-total=(total.to_string()) data-default-font=(web_font) data-default-size=(web_appearance.font_size.to_string()) data-default-width=(web_appearance.line_width.to_string()) data-default-leading=((web_appearance.line_spacing*10.).round().to_string()) data-default-margin=(web_appearance.margin_notes.to_string())><div class="stage"><div class="left-space"></div><article class=(mode_class)>
                 for b in blocks {
                     <section class=(format!("blk blk-{}{}{}", b.kind, if b.untranslated { " untranslated" } else { "" }, if b.paired.is_empty() { "" }else{ " paired" })) id=(format!("block-{}", b.id)) data-id=(b.id) data-page-block=(b.page_block.to_string())>
-                        if !b.src.is_empty() { <img src=(b.src) alt="文献插图"> }
+                        if !b.src.is_empty() { <img class="book-illustration" src=(b.src) alt=(b.alt)> }
                         <div class="translated">(Unescaped::new_unchecked(b.translated))</div>
                         <div class="source" lang="en">(Unescaped::new_unchecked(b.original))</div>
                         if b.page_block && !b.untranslated && b.paired.is_empty() { <small class="alignment-warning">"本页原文与译文结构不匹配，无法可靠地逐段对应；保留整页对照。"</small> }
@@ -1173,9 +1232,9 @@ async fn read(cx: &Cx) -> Result<impl View> {
                 <a href=(pdf_page.clone()) target="_blank" rel="noopener">"在新标签页查看原页 ↗"</a><img src=(pdf_page) alt=(format!("PDF 第 {number} 页"))>
             </aside> }
             <aside id="notes-drawer" class="tool-panel notes-drawer" aria-label="笔记列表" hidden=(true)>
-                <div class="panel-heading"><div><span class="eyebrow">"Annotations"</span><strong>"Paper notes"</strong></div><button class="panel-close" type="button" data-close-panel="true" aria-label="关闭笔记列表">"×"</button></div>
+                <div class="panel-heading"><div><span class="eyebrow">"Annotations"</span><strong>"全书笔记"</strong></div><button class="panel-close" type="button" data-close-panel="true" aria-label="关闭笔记列表">"×"</button></div>
                 <div class="drawer-filters" role="group" aria-label="笔记筛选"><button type="button" data-note-filter="all" class="active">"全部"</button><button type="button" data-note-filter="note">"笔记"</button><button type="button" data-note-filter="highlight">"划线"</button><button type="button" data-note-filter="unanswered">"未解答"</button></div>
-                <div class="paper-note"><strong>"Paper notes"</strong><form method="post" action=(format!("/read/{id}/paper-note"))><input type="hidden" name="page" value=(number)><input type="hidden" name="mode" value=(mode.clone())><textarea name="body" placeholder="记录全文要点…" maxlength="32000">(paper_note)</textarea><button type="submit">"保存全文笔记"</button></form></div>
+                <div class="paper-note"><strong>"全书笔记"</strong><form method="post" action=(format!("/read/{id}/paper-note"))><input type="hidden" name="page" value=(number)><input type="hidden" name="mode" value=(mode.clone())><textarea name="body" placeholder="记录全文要点…" maxlength="32000">(paper_note)</textarea><button type="submit">"保存全文笔记"</button></form></div>
                 <p class="drawer-hint">"全文批注 · 点击引文跳转到对应页。"</p>
                 for n in drawer_notes { <div class=(format!("drawer-note {}", n.kind)) data-note=(n.id.clone()) data-anchor=(n.anchor.clone()) data-kind=(n.kind.clone()) data-answered=(n.answered.to_string()) data-page=(n.page.to_string()) data-side=(n.side) data-prefix=(n.prefix) data-suffix=(n.suffix) data-created=(n.created.clone()) data-source-annotation=(n.source_annotation)>
                     <span class="tag">(format!("{} · {} {}", if n.kind == "question" { "My question" } else if n.kind == "highlight" { "My highlight" } else { "My note" }, if pdf { "p." } else { "章节" }, n.page))</span>
@@ -1201,11 +1260,11 @@ async fn read(cx: &Cx) -> Result<impl View> {
             </aside>
             if ask_available { <aside id="chat-panel" class="tool-panel chat-panel" aria-label="Ask AI 对话" hidden=(true)>
                 <div class="panel-heading"><strong>"✳ Ask AI"</strong><button class="panel-close" type="button" data-close-panel="true" aria-label="关闭 Ask AI">"×"</button></div>
-                <p class="drawer-hint">"基于当前文献及选定引文提问；请求经本机 Rust 服务器发送，密钥不会进入浏览器。"</p>
+                <p class="drawer-hint">"基于当前书籍及选定引文提问；请求经本机 Rust 服务器发送，密钥不会进入浏览器。"</p>
                 <div class="chat-messages">for message in chat_messages { <div class=(format!("chat-message {}",message.role))><span>(if message.failed { "AI · 请求失败" } else if message.role == "assistant" { "AI" } else { "你" })</span><div class="body">(Unescaped::new_unchecked(message.body_html))</div></div> }</div>
                 <form id="chat-form" method="post" action=(format!("/read/{id}/ask"))>
                     <input type="hidden" name="anchor"><input type="hidden" name="quote"><input type="hidden" name="note_id"><input type="hidden" name="page" value=(number)><input type="hidden" name="mode" value=(mode.clone())>
-                    <label>"提问"<textarea name="text" maxlength="4000" required=(true) placeholder="对当前论文有什么疑问？"></textarea></label><button type="submit">"发送问题"</button>
+                    <label>"提问"<textarea name="text" maxlength="4000" required=(true) placeholder="对当前书籍或章节有什么疑问？"></textarea></label><button type="submit">"发送问题"</button>
                 </form>
             </aside> }</div>
             <div id="floating" class="floating" role="toolbar" aria-label="选文操作" data-mark-style="highlight">
@@ -1392,7 +1451,7 @@ async fn preview_note(Form(input): Form<NotePreviewInput>) -> Result<Html<String
     if input.body.len() > 16_000 {
         return Err(bad_request("笔记过长").into());
     }
-    Ok(Html(cleaned(&formula::native_markdown_html(&input.body))))
+    Ok(Html(note_markdown::render(&input.body)))
 }
 
 #[route(POST "/read/{book_id}/notes/edit")]
@@ -1502,7 +1561,7 @@ async fn translate_book(cx: &Cx, Form(input): Form<AiPageInput>) -> Result<SeeOt
     if (prefs.ask_above == 0 || pages > prefs.ask_above as u64)
         && input.confirm.as_deref() != Some("yes")
     {
-        return Err(bad_request("长文献需要确认模型调用费用").into());
+        return Err(bad_request("长篇书籍或文档需要确认模型调用费用").into());
     }
     let cancel = Arc::new(AtomicBool::new(false));
     {
@@ -1511,7 +1570,7 @@ async fn translate_book(cx: &Cx, Form(input): Form<AiPageInput>) -> Result<SeeOt
             return Err(bad_request("该书正在翻译").into());
         }
         if tasks.len() >= concurrent_papers {
-            return Err(bad_request("已达到模型设置中的同时翻译文献上限").into());
+            return Err(bad_request("已达到模型设置中的同时翻译书目上限").into());
         }
         tasks.insert(id.clone(), cancel.clone());
     }
@@ -1733,7 +1792,7 @@ async fn save_translation(cx: &Cx, Form(input): Form<TranslationInput>) -> Resul
         .and_then(|b| b[if pdf { "page" } else { "chapter" }].as_u64())
         .unwrap_or(1) as usize;
     let source_pdf = book.asset("source.pdf").ok();
-    let rendered = display_blocks(&raw, &state, &[], position, pdf, source_pdf.as_deref())
+    let rendered = display_blocks(&raw, &state, &[], position, pdf, source_pdf.as_deref(), id)
         .into_iter()
         .find(|b| b.id == block_id)
         .ok_or_else(|| bad_request("段落已不存在"))?;
@@ -1757,6 +1816,7 @@ async fn save_translation(cx: &Cx, Form(input): Form<TranslationInput>) -> Resul
             position,
             pdf,
             source_pdf.as_deref(),
+            id,
         )
         .into_iter()
         .find(|b| b.id == block_id)
@@ -1891,6 +1951,10 @@ async fn serve_math_svg(
 async fn home_script() -> Result<Js<&'static str>> {
     Ok(Js(include_str!("../assets/home.js")))
 }
+#[route(GET "/popover.css")]
+async fn popover_styles() -> Result<Css<&'static str>> {
+    Ok(Css(include_str!("../assets/popover.css")))
+}
 #[route(GET "/settings.css")]
 async fn settings_styles() -> Result<Css<&'static str>> {
     Ok(Css(include_str!("../assets/settings.css")))
@@ -1931,20 +1995,7 @@ async fn media(cx: &Cx) -> Result<([(topcoat::router::HeaderName, &'static str);
     let id = path_param::<BookId>(cx);
     let segments = path_param::<AssetPath>(cx);
     let path = segments.collect::<Vec<_>>().join("/");
-    if !(path.starts_with("images/") || path.starts_with("pages/")) {
-        return Err(not_found().into());
-    }
-    let content_type = if path.ends_with(".png") {
-        "image/png"
-    } else if path.ends_with(".jpg") || path.ends_with(".jpeg") {
-        "image/jpeg"
-    } else if path.ends_with(".webp") {
-        "image/webp"
-    } else if path.ends_with(".gif") {
-        "image/gif"
-    } else {
-        return Err(not_found().into());
-    };
+    let content_type = book_images::content_type(&path).ok_or_else(not_found)?;
     let workspace = library().workspace(id).map_err(|_| not_found())?;
     let file = workspace.asset(&path).map_err(|_| not_found())?;
     let bytes = tokio::fs::read(file).await.map_err(|_| not_found())?;
@@ -1996,6 +2047,38 @@ mod tests {
     }
 
     #[test]
+    fn book_html_rebases_images_and_keeps_only_safe_raster_data_urls() {
+        let png = "data:image/png;base64,iVBORw0KGgoAAA==";
+        let html = super::cleaned_html(&format!(
+            r##"<p><img src="figures/a b.webp" alt="diagram" onerror="evil()"><img src="{png}"><img src="data:image/svg+xml,bad"><img src="../secret.png"><a href="data:text/html,bad">bad link</a><a href="#chapter">chapter</a></p>"##
+        ), Some("test-book"));
+        assert!(html.contains("/read/test-book/figures/a%20b.webp"), "{html}");
+        assert!(html.contains(png), "{html}");
+        assert!(html.contains("href=\"#chapter\""), "{html}");
+        for forbidden in ["onerror", "data:image/svg", "../secret", "data:text/html"] {
+            assert!(!html.contains(forbidden), "{html}");
+        }
+    }
+
+    #[test]
+    fn figure_blocks_use_book_scoped_urls_and_caption_translations() {
+        use serde_json::{Value, json};
+        let mut raw: Value = serde_json::from_str(include_str!("../../fixtures/state.json")).unwrap();
+        raw["paper"]["blocks"] = json!([
+            {"id":"epub-figure","type":"figure","page":1,"src":"images/book picture.png","alt":"A diagram","caption_en":"Figure 1","caption_zh":"图 1"},
+            {"id":"pdf-figure","type":"figure","page":1,"src":"figures/native.webp","caption_en":"Figure 2"}
+        ]);
+        let state = super::ReaderState::from_value(raw.clone()).unwrap();
+        let blocks = super::display_blocks(&raw, &state, &[], 1, true, None, "test-book");
+        assert_eq!(blocks[0].src, "/read/test-book/images/book%20picture.png");
+        assert_eq!(blocks[0].alt, "A diagram");
+        assert!(!blocks[0].untranslated);
+        assert!(blocks[0].original.contains("Figure 1"));
+        assert!(blocks[0].translated.contains("图 1"));
+        assert_eq!(blocks[1].src, "/read/test-book/figures/native.webp");
+    }
+
+    #[test]
     fn pdf_page_translation_pairs_paragraphs_without_changing_the_persisted_anchor() {
         use super::display_blocks;
         use easyread_gpui::model::{ReaderState, text_hash};
@@ -2008,7 +2091,7 @@ mod tests {
             "en":en,"zh":zh,"native_translation_layout":{"version":1,"source_hash":text_hash(en),"translation_hash":text_hash(zh),
                 "html":"<p>第一段译文。</p><p>第二段译文。</p>"}}));
         let state = ReaderState::from_value(raw.clone()).unwrap();
-        let blocks = display_blocks(&raw, &state, &[], 2, true, None);
+        let blocks = display_blocks(&raw, &state, &[], 2, true, None, "test-book");
         let pair = &blocks[0];
         assert!(pair.page_block);
         assert_eq!(pair.paired.matches("data-easyread-companion").count(), 2);
@@ -2023,7 +2106,7 @@ mod tests {
         assert_eq!(pair.id, "pdf-page-pair");
         let note = json!({"id":"pdf-inline-note","anchor":"pdf-page-pair","side":"en","quote":"Second source",
             "prefix":"","suffix":"","kind":"highlight","color":"yellow","style":"highlight"});
-        let marked = display_blocks(&raw, &state, &[note], 2, true, None);
+        let marked = display_blocks(&raw, &state, &[note], 2, true, None, "test-book");
         assert!(
             marked[0]
                 .paired
@@ -2036,7 +2119,7 @@ mod tests {
             .unwrap()["zh"] = json!("合并译文。");
         let state = ReaderState::from_value(raw.clone()).unwrap();
         assert!(
-            display_blocks(&raw, &state, &[], 2, true, None)[0]
+            display_blocks(&raw, &state, &[], 2, true, None, "test-book")[0]
                 .paired
                 .is_empty(),
             "ambiguous legacy translations must not be guessed into paragraph pairs"
@@ -2046,10 +2129,12 @@ mod tests {
     #[test]
     fn only_generated_math_metadata_and_palette_underlines_survive_sanitizing() {
         let html = cleaned(
-            r#"<span data-vellio-math="x^2" data-display="false">$x^2$</span><u style="text-decoration-color:#477fc1">blue</u><u style="background:url(javascript:evil)">bad</u>"#,
+            r#"<p data-vellio-equation="true"><span data-vellio-math="x^2" data-display="false">$x^2$</span></p><p data-vellio-footnote="true">4Footnote</p><u style="text-decoration-color:#477fc1">blue</u><u style="background:url(javascript:evil)">bad</u>"#,
         );
         assert!(html.contains("data-vellio-math=\"x^2\""), "{html}");
         assert!(html.contains("data-underline=\"blue\""), "{html}");
+        assert!(html.contains("data-vellio-equation=\"true\""), "{html}");
+        assert!(html.contains("data-vellio-footnote=\"true\""), "{html}");
         assert!(!html.contains("javascript:"), "{html}");
     }
 }

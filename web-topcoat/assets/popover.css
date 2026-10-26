@@ -1,0 +1,83 @@
+/* Topcoat 0.11's FloatingAnchor::Invoker / Bottom positioning, adapted to
+   Vellio's existing CSS instead of installing a second Tailwind theme.
+   Native popovers live in the top layer: no clipping, custom z-index, or JS
+   outside-click/Escape/focus bookkeeping. Without CSS anchor positioning the
+   browser centers the panel, keeping it usable rather than placing it offscreen. */
+.vellio-popover[popover] {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  width: max-content;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100dvh - 16px);
+  height: max-content;
+  overflow: auto;
+  padding: 14px;
+  border: 1px solid var(--line, var(--border));
+  border-radius: 12px;
+  background: var(--card, var(--paper));
+  color: var(--ink);
+  box-shadow: 0 8px 28px #52452c20;
+}
+.contents-popover[popover] { width: 420px; }
+.contents-sections {
+  max-height: min(55dvh, 560px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.contents-tree, .contents-tree ol { list-style: none; margin: 0; padding: 0; }
+.contents-tree ol { margin-inline-start: 9px; padding-inline-start: 14px; border-inline-start: 1px solid var(--line); }
+.contents-tree li { margin: 0; padding: 0; }
+.contents-tree .contents-link {
+  display: block;
+  padding: 7px 9px;
+  border-radius: 6px;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  text-decoration: none;
+}
+.contents-tree > li > .contents-link { font-weight: 600; }
+.contents-tree .contents-link:hover { background: #eee9df; }
+.contents-tree .contents-link[aria-current="location"] { color: var(--accent); background: #e5ece9; }
+.contents-tree .contents-link:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.contents-hint, .contents-empty { margin: 0 0 10px; color: var(--muted); font-size: 12px; }
+.appearance-popover[popover] { width: 292px; }
+.order-options[popover] { width: 160px; padding: 6px; }
+.model-actions[popover] { width: 224px; padding: 7px; }
+/* Keep the panel inside its wrapper for inherited language and existing styles. */
+.order-menu > button {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+}
+.order-menu > button:hover,
+.order-menu:has(:popover-open) > button,
+.top :is(.contents-menu, .appearance-menu):has(:popover-open) > button { background: #e5e6e2; }
+.model-more > button {
+  padding: 0 5px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 22px;
+  line-height: 30px;
+}
+[popovertarget]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@supports (position-area: bottom) {
+  .vellio-popover[popover] {
+    inset: auto;
+    margin: 4px 0 0;
+    position-anchor: auto;
+    position-area: bottom span-right;
+    position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+  }
+  .vellio-popover[popover][data-align="end"] { position-area: bottom span-left; }
+}

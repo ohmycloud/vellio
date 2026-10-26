@@ -1,0 +1,9 @@
+appearance = Reading appearance
+font = Font
+font_noto = Noto Serif SC
+font_system = System serif
+font_sans = Sans serif
+size = Font size
+width = Line width
+leading = Line spacing
+margin_notes = Show margin notes

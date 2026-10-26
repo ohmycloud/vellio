@@ -113,7 +113,7 @@ async fn settings_page(cx: &Cx) -> Result<impl View> {
     };
     Ok(view! {
         <!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-            <title>"Settings · Vellio"</title><link rel="stylesheet" href="/settings.css"><script src="/settings.js" defer="defer"></script><script src="/updates.js" defer="defer"></script>
+            <title>"Settings · Vellio"</title><link rel="stylesheet" href="/settings.css"><link rel="stylesheet" href="/popover.css"><script src="/settings.js" defer="defer"></script><script src="/updates.js" defer="defer"></script>
         </head><body class="settings-page"><div class="settings-shell">
             <header class="settings-header"><a href="/" class="settings-back" title="Back to library">"‹"</a><h1>"Settings"</h1>
                 <nav aria-label="Settings tabs"><a class=(if tab == "model" {"active"}else{""}) href="/settings?tab=model">"Model"</a><a class=(if tab == "reading" {"active"}else{""}) href="/settings?tab=reading">"Reading"</a><a class=(if tab == "sidebar" {"active"}else{""}) href="/settings?tab=sidebar">"Sidebar"</a><a class=(if tab == "cloud" {"active"}else{""}) href="/settings?tab=cloud">"Cloud library"</a><a class=(if tab == "shortcuts" {"active"}else{""}) href="/settings?tab=shortcuts">"Keyboard shortcuts"</a><a class=(if tab == "about" {"active"}else{""}) href="/settings?tab=about">"About / Updates"</a></nav>
@@ -121,14 +121,16 @@ async fn settings_page(cx: &Cx) -> Result<impl View> {
             <main class="settings-content">
                 if tab == "model" {
                     <div class="model-grid">
+                    #[key(model.id.clone())]
                     for model in models {
+                        let menu_id = element_id(&cx.keyed(model.id.clone()));
                         <article class=(format!("model-card{}",if model.id == prefs.translation_model || model.id == prefs.ask_model {" active"} else {""})) data-id=(model.id.clone()) data-name=(model.name.clone()) data-model=(model.model.clone()) data-provider=(serde_json::to_value(model.provider).unwrap_or(Value::Null).as_str().unwrap_or("api").to_owned()) data-base=(model.base_url.clone()) data-key-env=(model.key_env.clone()) data-executable=(model.executable.clone()) data-reasoning=(model.reasoning.clone())>
                             <form method="post" action="/settings/model" class="model-select"><input type="hidden" name="revision" value=(rev.clone())><input type="hidden" name="id" value=(model.id.clone())><button type="submit" name="action" value="translation" title="Use for translation"><strong>(model.name.clone())</strong><span>(model.provider.label())</span></button></form>
-                            <details class="model-more"><summary aria-label=(format!("Manage {}",model.name))>"···"</summary><div class="model-actions"><button type="button" data-edit-model=(model.id.clone())>"Edit connection"</button>
+                            <div class="model-more"><button type="button" popovertarget=(&menu_id) aria-label=(format!("Manage {}",model.name))>"···"</button><div id=(&menu_id) popover="auto" class="model-actions vellio-popover" data-align="end" aria-label=(format!("Manage {}",model.name))><button type="button" data-edit-model=(model.id.clone())>"Edit connection"</button>
                                 <form method="post" action="/settings/model"><input type="hidden" name="revision" value=(rev.clone())><input type="hidden" name="id" value=(model.id.clone())><button name="action" value="ask" type="submit">"Use for Ask AI"</button></form>
                                 <form method="post" action="/settings/model"><input type="hidden" name="revision" value=(rev.clone())><input type="hidden" name="id" value=(model.id.clone())><button name="action" value="remove" type="submit" data-confirm-remove=(model.name.clone())>"Remove"</button></form>
                                 <small class="model-readiness">(if model.provider == ai::Provider::Api { if ai::Connection::from_profile(model.clone()).is_ok() { "Key present · connection not tested" }else{ "API key missing or profile invalid" } } else if ai::cli_executable(model.provider,&model.executable).is_ok() { "CLI found · login not verified" }else{ "CLI not installed" })</small>
-                            </div></details>
+                            </div></div>
                             <div class="model-badges">if model.id == prefs.ask_model { <span>"Ask AI default"</span> }if model.id == prefs.translation_model { <span>"Translation"</span> }</div>
                         </article>
                     }
@@ -141,10 +143,10 @@ async fn settings_page(cx: &Cx) -> Result<impl View> {
                             for effort in effort_levels { <option value=(effort) selected=(selected_effort == effort)>(effort)</option> }
                         </select></label></details>
                         <div class="settings-options"><label>"Pages per batch"<select name="pages_per_batch" aria-label="Pages per batch">for n in 1..=10 { <option value=(n.to_string()) selected=(prefs.pages_per_batch == n)>(format!("{n} pages"))</option> }</select></label>
-                            <label>"Parallel segments per paper"<select name="parallel" aria-label="Parallel segments"><option value="0" selected=(prefs.parallel == 0)>"Auto"</option>for n in 1..=8 { <option value=(n.to_string()) selected=(prefs.parallel == n)>(n)</option> }</select></label>
-                            <label>"Concurrent papers"<select name="concurrent_papers" aria-label="Concurrent papers">for n in 1..=4 { <option value=(n.to_string()) selected=(concurrent == n)>(if n == 1 { "1 paper (default, sequential)".to_owned() } else { format!("{n} papers") })</option> }</select></label>
-                            <label>"Ask first if a paper has more than"<select name="ask_above" aria-label="Ask first if a paper has more than">for n in [0,20,30,40,60,100,200,500] { <option value=(n.to_string()) selected=(prefs.ask_above == n)>(if n == 0 { "Always ask".into() }else{ format!("{n} pages") })</option> }</select></label>
-                        </div><p class="settings-caution">"Running multiple papers multiplies each paper's segment concurrency, increases memory use, and may trigger model rate limits; keep the default of 1 paper when possible (maximum 4). This Web limit takes effect on the next job. The desktop build in this repository does not yet enforce concurrent papers or a Fast toggle."</p>
+                            <label>"Parallel segments per book"<select name="parallel" aria-label="Parallel segments"><option value="0" selected=(prefs.parallel == 0)>"Auto"</option>for n in 1..=8 { <option value=(n.to_string()) selected=(prefs.parallel == n)>(n)</option> }</select></label>
+                            <label>"Concurrent books / documents"<select name="concurrent_papers" aria-label="Concurrent books / documents">for n in 1..=4 { <option value=(n.to_string()) selected=(concurrent == n)>(if n == 1 { "1 item (default, sequential)".to_owned() } else { format!("{n} items") })</option> }</select></label>
+                            <label>"Ask first if a book has more than"<select name="ask_above" aria-label="Ask first if a book has more than">for n in [0,20,30,40,60,100,200,500] { <option value=(n.to_string()) selected=(prefs.ask_above == n)>(if n == 0 { "Always ask".into() }else{ format!("{n} pages") })</option> }</select></label>
+                        </div><p class="settings-caution">"Translating multiple books or documents multiplies segment concurrency, increases memory use, and may trigger model rate limits; keep the default of 1 item when possible (maximum 4). This Web limit takes effect on the next job. The desktop build in this repository does not yet enforce this concurrency limit or a Fast toggle."</p>
                         <div class="settings-footer"><button type="submit" class="settings-primary">"Save translation settings"</button></div>
                     </form>
                     <form method="post" action="/settings/test" class="settings-test"><button type="submit">"✳  Test with one sentence"</button></form>
@@ -301,7 +303,7 @@ async fn save_model(Form(input): Form<ModelAction>) -> Result<SeeOther> {
             let concurrent: usize = input
                 .concurrent_papers
                 .parse()
-                .map_err(|_| bad_request("无效文献并发数"))?;
+                .map_err(|_| bad_request("无效书目并发数"))?;
             if !(1..=10).contains(&prefs.pages_per_batch)
                 || prefs.parallel > 8
                 || ![0, 20, 30, 40, 60, 100, 200, 500].contains(&prefs.ask_above)

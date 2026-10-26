@@ -25,8 +25,10 @@
   };
   document.getElementById('add-model')?.addEventListener('click', () => open(null));
   document.querySelectorAll('[data-edit-model]').forEach(button => button.addEventListener('click', () => {
+    // Close before opening the modal so native focus restoration does not
+    // send keyboard focus back to the menu behind the dialog.
+    button.closest('[popover]').hidePopover();
     open(button.closest('.model-card'));
-    button.closest('details').open = false;
   }));
   dialog.querySelectorAll('[data-close-model]').forEach(button => button.addEventListener('click', () => dialog.close()));
   dialog.addEventListener('click', e => {if (e.target === dialog) dialog.close()});

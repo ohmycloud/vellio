@@ -6,17 +6,86 @@
   const form = document.getElementById('mark-form');
   let marginEditor = null;
   const reader = document.querySelector('.reader-body');
+  const contentsPanel = document.querySelector('.contents-popover');
+  contentsPanel?.addEventListener('click', event => {
+    // Same-chapter fragment links do not reload the document. Close explicitly
+    // without intercepting native link navigation, new tabs or Back/Forward.
+    if (event.target.closest('.contents-link') && contentsPanel.matches(':popover-open')) contentsPanel.hidePopover();
+  });
+  contentsPanel?.addEventListener('toggle', event => {
+    if (event.newState !== 'open') return;
+    const links = [...contentsPanel.querySelectorAll('.contents-link')];
+    const local = links.filter(link => link.dataset.tocPage === reader.dataset.page);
+    let current = local[0];
+    for (const link of local) {
+      const target = link.dataset.tocBlock && document.getElementById(`block-${link.dataset.tocBlock}`);
+      if (target && target.getBoundingClientRect().top <= 100) current = link;
+    }
+    // A short chapter may not scroll far enough to align a clicked heading
+    // with the toolbar. Its explicit fragment still identifies the selection.
+    let fragment = '';
+    try {fragment = decodeURIComponent(location.hash.slice(1));} catch {}
+    current = local.find(link => link.dataset.tocBlock && `block-${link.dataset.tocBlock}` === fragment) || current;
+    for (const link of links) {
+      if (link === current) link.setAttribute('aria-current', 'location');
+      else link.removeAttribute('aria-current');
+    }
+    const scroller = contentsPanel.querySelector('.contents-sections');
+    if (current && scroller) {
+      const row = current.getBoundingClientRect(), box = scroller.getBoundingClientRect();
+      scroller.scrollTop += row.top - box.top - (scroller.clientHeight - row.height) / 2;
+    }
+  });
   const orderKey = `vellio-web:reading-order:${reader.dataset.bookId}`;
   const orderMenu = document.querySelector('.order-menu');
   // A PDF page is one persisted block but may contain many logical paragraphs.
   // PairLayout supplied the role-checked companions; group its source fragments
   // without changing the book's block IDs or duplicating image/equation rows.
+  function foldFootnotes(host, scope, previous) {
+    const notes = [...host.children].filter(node => node.matches('[data-vellio-footnote="true"]') ||
+      node.querySelector(':scope > .source[data-vellio-footnote="true"]'));
+    if (!notes.length) return;
+    const details = document.createElement('details');
+    details.className = 'pdf-footnotes';details.dataset.footnoteScope = scope;
+    details.open = previous?.querySelector(`.pdf-footnotes[data-footnote-scope="${scope}"]`)?.open || false;
+    const summary = document.createElement('summary');summary.textContent = '本页脚注';
+    details.append(summary, ...notes);host.append(details);
+  }
   function prepareBlocks(root, previous = null) {
+    // Old saved equation rows also get the same layout, without rewriting TeX,
+    // labels, annotations or paragraph IDs. Inline math never enters this path.
+    for (const row of root.querySelectorAll('.blk p')) {
+      const math = [...row.querySelectorAll('[data-vellio-math]')];
+      if (!math.length || math.some(node => node.dataset.display !== 'true')) continue;
+      const outside = row.cloneNode(true);
+      outside.querySelectorAll('[data-vellio-math]').forEach(node => node.remove());
+      if (/^(?:[（(][\w.+*-]+[)）]|\[[\w.+*-]+\])?$/.test(outside.textContent.trim()))
+        row.dataset.vellioEquation = 'true';
+    }
     for (const block of root.querySelectorAll('.blk')) {
+      // Whole-page fallback may contain the same native crop in both languages.
+      // Hide only matching images in the secondary language; single-language
+      // modes and the user's bilingual order still retain the complete figure.
+      const sourceImages = [...block.querySelectorAll(':scope > .source img')];
+      const translatedImages = [...block.querySelectorAll(':scope > .translated img')];
+      const sourceUrls = new Set(sourceImages.map(image => image.getAttribute('src')).filter(Boolean));
+      const translatedUrls = new Set(translatedImages.map(image => image.getAttribute('src')).filter(Boolean));
+      for (const image of [...sourceImages, ...translatedImages]) {
+        const shared = sourceUrls.has(image.getAttribute('src')) && translatedUrls.has(image.getAttribute('src'));
+        image.classList.toggle('shared-illustration', shared);
+        const row = image.closest('p');
+        if (shared && row && !row.textContent.trim() && [...row.querySelectorAll('img')].every(other =>
+          sourceUrls.has(other.getAttribute('src')) && translatedUrls.has(other.getAttribute('src'))))
+          row.classList.add('shared-illustration-row');
+      }
       if (block.dataset.pageBlock === 'true') for (const lang of block.querySelectorAll(':scope > .source, :scope > .translated')) {
         const selector = 'p,h1,h2,h3,h4,h5,h6,li,td,th,figcaption';
         const units = [...lang.querySelectorAll(selector)].filter(node => !node.querySelector(selector));
         for (const unit of units.length ? units : lang.children) unit.classList.add('paragraph-unit');
+      }
+      for (const side of ['source', 'translated']) {
+        const host = block.querySelector(`:scope > .${side}`);
+        if (host) foldFootnotes(host, side, previous);
       }
       const flow = block.querySelector(':scope > .paired-flow');
       if (!flow) continue;
@@ -46,6 +115,7 @@
       for (const [index,pair] of [...flow.querySelectorAll('.paragraph-pair')].entries()) {
         if (oldPairs[index]?.dataset.secondary) pair.dataset.secondary = oldPairs[index].dataset.secondary;
       }
+      foldFootnotes(flow, 'paired', previous);
       const active = paper.classList.contains('mode-bilingual') || block.dataset.localLanguages === 'true';
       block.classList.toggle('pair-active', active);
       flow.hidden = !active;
@@ -65,7 +135,7 @@
     try {localStorage.setItem(orderKey, order);} catch {}
     if (!paper.classList.contains('mode-bilingual')) {
       const url = new URL(location.href);url.searchParams.set('mode','bilingual');location.assign(url);
-    } else {setReadingOrder(order);orderMenu.open=false;}
+    } else {setReadingOrder(order);} // The native hide action closes the popover.
   }));
   let pending = null;
   let markStyle = 'highlight', markColor = 'yellow';
@@ -121,8 +191,14 @@
     const before = range.cloneRange();
     before.selectNodeContents(lang);
     before.setEnd(range.startContainer, range.startOffset);
-    const text = lang.textContent;
-    const offset = before.toString().length;
+    // Disclosure labels are reader UI, not source text or annotation context.
+    const contextText = node => {
+      const copy = node.cloneNode(true);
+      copy.querySelectorAll('.pdf-footnotes > summary').forEach(summary => summary.remove());
+      return copy.textContent;
+    };
+    const text = contextText(lang);
+    const offset = contextText(before.cloneContents()).length;
     return {anchor: block.dataset.id, side: lang.classList.contains('source') || block.classList.contains('untranslated') ? 'en' : 'zh',
       quote, prefix: text.slice(Math.max(0, offset - 32), offset),
       suffix: text.slice(offset + quote.length, offset + quote.length + 32)};
@@ -305,7 +381,7 @@
       chatForm.elements.anchor.value = pending.anchor;
       chatForm.elements.quote.value = pending.quote.slice(0, 1000);
       chatForm.elements.note_id.value = '';
-      chatForm.elements.text.value = pending.quote ? `请解释这段文献：“${pending.quote.slice(0, 1000)}”` : '请解释当前段落。';
+      chatForm.elements.text.value = pending.quote ? `请解释这段内容：“${pending.quote.slice(0, 1000)}”` : '请解释当前段落。';
       chatForm.elements.text.focus({preventScroll:true});
       close();return;
     }
@@ -329,6 +405,9 @@
   });
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape') {
+      // Dismiss the top-layer control first. A single Escape must not also
+      // close/submit a note draft or a translation editor underneath it.
+      if (document.querySelector('.vellio-popover:popover-open')) return;
       close();marginEditor?.close();
       paper.querySelectorAll('.translation-editor:not([hidden])').forEach(closeTranslationEditor);
       window.getSelection()?.removeAllRanges();
@@ -675,6 +754,11 @@
     for (const group of groups.values()) paintGeometry(annotationLayer, measureRanges(group.ranges, group.root), group);
   }
   function refreshGeometry() {updateAnnotations();updateMathSelection();}
+  paper.addEventListener('toggle', event => {
+    if (!event.target.matches('.pdf-footnotes')) return;
+    if (event.target.open) renderMath(event.target);
+    requestAnimationFrame(() => {refreshGeometry();placeNotes();});
+  }, true);
   document.addEventListener('selectionchange', updateMathSelection);
   function installMath(node, image, metrics) {
     const text = document.createElement('span');

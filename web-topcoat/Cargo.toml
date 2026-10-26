@@ -2,11 +2,12 @@
 name = "vellio-web-topcoat"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.99"
 
 [dependencies]
-easyread-gpui = { path = ".." }
+easyread-gpui = { path = "..", features = ["syntax-highlighting"] }
 ammonia = "4"
-topcoat = { version = "=0.10.0", features = ["multipart", "anyhow"] }
+topcoat = { version = "=0.11.0", features = ["multipart", "anyhow", "l10n-fluent"] }
 anyhow = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
@@ -15,6 +16,7 @@ serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 roxmltree = "0.21"
+percent-encoding = "2"
 
 [profile.dev]
 debug = 0

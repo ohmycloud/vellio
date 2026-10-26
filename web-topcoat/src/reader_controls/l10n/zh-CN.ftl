@@ -1,0 +1,9 @@
+appearance = 阅读外观
+font = 字体
+font_noto = 宋体
+font_system = 系统衬线
+font_sans = 无衬线
+size = 字号
+width = 行宽
+leading = 行距
+margin_notes = 显示页边笔记
