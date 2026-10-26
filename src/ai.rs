@@ -2,6 +2,9 @@
 #[path = "ai_connection.rs"]
 mod connection;
 pub use connection::*;
+#[path = "ai_identity.rs"]
+mod identity;
+pub use identity::{ModelAnswer, ModelIdentity, answer_model_label};
 #[path = "ai_batch.rs"]
 mod batch;
 use crate::store::{Workspace, now};
@@ -55,6 +58,7 @@ fn frame(
     answer: &mut String,
     delta: &mut impl FnMut(&str),
     finished: &mut bool,
+    model: &mut Option<String>,
 ) -> Result<bool> {
     if data.trim() == "[DONE]" {
         return Ok(true);
@@ -62,6 +66,9 @@ fn frame(
     let value: Value = serde_json::from_str(data).context("Malformed SSE JSON")?;
     if value.get("error").is_some() {
         bail!("AI stream returned an error");
+    }
+    if let Some(reported) = value["model"].as_str().and_then(identity::concrete_model) {
+        *model = Some(reported.to_owned());
     }
     if let Some(s) = value["choices"][0]["delta"]["content"].as_str() {
         answer.push_str(s);
@@ -75,7 +82,15 @@ fn frame(
 pub fn decode_sse(
     input: impl BufRead,
     cancel: &AtomicBool,
+    delta: impl FnMut(&str),
+) -> Result<String> {
+    decode_sse_recorded(input, cancel, delta, &mut None)
+}
+fn decode_sse_recorded(
+    input: impl BufRead,
+    cancel: &AtomicBool,
     mut delta: impl FnMut(&str),
+    model: &mut Option<String>,
 ) -> Result<String> {
     let mut answer = String::new();
     let mut data = String::new();
@@ -88,7 +103,15 @@ pub fn decode_sse(
             "AI stream exceeds limits"
         );
         if line.is_empty() {
-            if !data.is_empty() && frame(data.trim_end(), &mut answer, &mut delta, &mut finished)? {
+            if !data.is_empty()
+                && frame(
+                    data.trim_end(),
+                    &mut answer,
+                    &mut delta,
+                    &mut finished,
+                    model,
+                )?
+            {
                 return Ok(answer);
             }
             data.clear();
@@ -98,7 +121,15 @@ pub fn decode_sse(
             ensure!(data.len() < 1024 * 1024, "SSE event too large");
         }
     }
-    if !data.is_empty() && frame(data.trim_end(), &mut answer, &mut delta, &mut finished)? {
+    if !data.is_empty()
+        && frame(
+            data.trim_end(),
+            &mut answer,
+            &mut delta,
+            &mut finished,
+            model,
+        )?
+    {
         return Ok(answer);
     }
     ensure!(finished, "AI stream ended without a completion marker");
@@ -118,6 +149,16 @@ fn stream_effort(
     effort: &str,
     cancel: &AtomicBool,
     delta: &mut dyn FnMut(&str),
+) -> Result<String> {
+    stream_effort_recorded(config, messages, effort, cancel, delta, &mut None)
+}
+fn stream_effort_recorded(
+    config: &Config,
+    messages: Value,
+    effort: &str,
+    cancel: &AtomicBool,
+    delta: &mut dyn FnMut(&str),
+    model: &mut Option<String>,
 ) -> Result<String> {
     validate_endpoint(&config.base_url)?;
     ensure!(!cancel.load(Ordering::Relaxed), "AI request cancelled");
@@ -144,7 +185,7 @@ fn stream_effort(
         "AI request failed: HTTP {}",
         response.status()
     );
-    decode_sse(BufReader::new(response), cancel, delta)
+    decode_sse_recorded(BufReader::new(response), cancel, delta, model)
 }
 fn normalize_chat(chat: &mut Value) -> Result<()> {
     ensure!(chat.is_object(), "Invalid chat state");

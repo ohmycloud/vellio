@@ -227,10 +227,16 @@ pub fn ask_with_context(
     }
     messages.push(json!({"role":"user","content":request.text}));
     let mut partial = String::new();
-    let mut outcome = config.request(json!(messages), cancel, &mut |s| {
-        partial.push_str(s);
-        delta(s);
-    });
+    let mut identity = ModelIdentity::new(config.model(), config.provider());
+    let mut outcome = config
+        .request_with_identity(json!(messages), cancel, &mut |s| {
+            partial.push_str(s);
+            delta(s);
+        })
+        .map(|answer| {
+            identity = answer.identity;
+            answer.text
+        });
     if let Ok(answer) = &outcome {
         if partial.is_empty() {
             partial = answer.clone();
@@ -267,7 +273,7 @@ pub fn ask_with_context(
             "note":request.note,"answer_style":request.answer_style,"at":stamp}));
         messages.push(json!({"id":format!("m{}",Uuid::new_v4().simple()),"role":"assistant","content":partial,
             "anchor":anchor,"note":request.note,"answer_style":request.answer_style,"at":stamp,
-            "model":config.model(),"status":status}));
+            "model":identity.model,"provider":identity.provider,"requested_model":config.model(),"status":status}));
         thread["updated"] = json!(stamp);
         thread["model"] = json!(model_id);
         thread["answer_style"] = json!(request.answer_style);
@@ -301,7 +307,7 @@ pub fn ask_with_context(
                     .map(str::to_owned)
                     .unwrap_or_else(|| format!("d{}", Uuid::new_v4().simple()));
                 let reply = json!({"id":id,"reply_to":note_id,"kind":"reply","body":partial,
-                    "by":config.model(),"live":true,"anchor":note["anchor"],"at":stamp});
+                    "by":identity.model,"model":identity.model,"provider":identity.provider,"requested_model":config.model(),"live":true,"anchor":note["anchor"],"at":stamp});
                 if let Some(i) = previous {
                     entries[i] = reply;
                 } else {
@@ -375,7 +381,7 @@ pub fn pin_chat_message(ws: &Workspace, tid: &str, mid: &str) -> Result<()> {
         let entries = discussion["entries"].as_array_mut().context("Invalid discussion entries")?;
         if !entries.iter().any(|e| e["chat_message"] == mid && e["deleted"] != true) {
             entries.push(json!({"id":format!("d{}",Uuid::new_v4().simple()),"kind":"qa","anchor":answer["anchor"],
-                "q":index.checked_sub(1).map(|i| &messages[i]["content"]),"body":answer["content"],"by":answer["model"],"chat_message":mid,"at":now()}));
+                "q":index.checked_sub(1).map(|i| &messages[i]["content"]),"body":answer["content"],"by":answer["model"],"model":answer["model"],"provider":answer["provider"],"requested_model":answer["requested_model"],"chat_message":mid,"at":now()}));
         }
         Ok(())
     })?;

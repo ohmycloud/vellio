@@ -96,7 +96,7 @@ impl HomeState {
             )),
             search: cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder("Search titles, authors, folders, abstracts")
+                    .placeholder("Search titles, authors, folders")
             }),
             folder_input: cx.new(|cx| InputState::new(window, cx).placeholder("Folder name")),
             rename_input: cx.new(|cx| InputState::new(window, cx).placeholder("Name")),
@@ -958,33 +958,6 @@ impl ReaderView {
                 })),
             )
             .child(
-                action(
-                    "home-batch-citations",
-                    "icons/copy.svg",
-                    "Export citations",
-                    "导出引文",
-                )
-                .on_click(cx.listener(|this, _, _, cx| {
-                    let citations = this
-                        .items
-                        .iter()
-                        .filter(|item| {
-                            this.home
-                                .selected
-                                .contains(item["id"].as_str().unwrap_or(""))
-                        })
-                        .map(catalog::citation)
-                        .collect::<Vec<_>>()
-                        .join("\n\n");
-                    cx.write_to_clipboard(ClipboardItem::new_string(citations));
-                    this.home.notice = this
-                        .home
-                        .text("Citations copied to clipboard", "引文已复制到剪贴板")
-                        .into();
-                    cx.notify();
-                })),
-            )
-            .child(
                 Button::new("home-batch-delete")
                     .small()
                     .h(px(28.))
@@ -1701,7 +1674,7 @@ impl ReaderView {
             .collect();
         items.sort_by(|a, b| catalog::compare_for_sort(a, b, self.home.sort));
         let label = match self.home.filter.as_str() {
-            "all" => self.home.text("All papers", "全部文献").to_owned(),
+            "all" => self.home.text("All books", "全部书籍").to_owned(),
             "reading" => self.home.text("Reading", "在读").to_owned(),
             "unread" => self.home.text("Unread", "未读").to_owned(),
             "done" => self.home.text("Done", "已读").to_owned(),

@@ -1,6 +1,8 @@
 pub mod ai;
 pub mod annotation_panel;
 pub mod annotations;
+#[cfg(feature = "syntax-highlighting")]
+pub mod code_syntax;
 pub mod epub_pagination;
 pub mod figure_image;
 pub mod formats;
@@ -15,6 +17,7 @@ pub mod paragraph_translation;
 pub mod pdf;
 mod pdf_code;
 pub mod pdf_layout_cache;
+pub mod reading_footnotes;
 pub mod reading_motion;
 pub mod session;
 pub mod settings;

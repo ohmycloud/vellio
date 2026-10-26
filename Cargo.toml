@@ -31,7 +31,8 @@ syntect = { version = "5.3", default-features = false, features = ["default-synt
 
 [features]
 default = []
-desktop = ["dep:gpui-kit", "dep:syntect", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation", "dep:gpui-apple"]
+syntax-highlighting = ["dep:syntect"]
+desktop = ["dep:gpui-kit", "syntax-highlighting", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation", "dep:gpui-apple"]
 desktop-ui-tests = ["desktop", "gpui-kit/test-support"]
 
 [target.'cfg(target_os = "macos")'.dependencies]

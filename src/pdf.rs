@@ -405,7 +405,7 @@ fn text_panels(page: &PdfPage<'_>) -> (std::collections::HashSet<usize>, Vec<[f3
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let mut panels: Vec<_> = paths
+    let mut filled: Vec<[f32; 4]> = paths
         .iter()
         .filter_map(|(_, b, rectangle, color)| {
             let color = color.as_ref()?;
@@ -420,24 +420,28 @@ fn text_panels(page: &PdfPage<'_>) -> (std::collections::HashSet<usize>, Vec<[f3
             {
                 return None;
             }
-            let mut lines = std::collections::BTreeMap::<i32, (usize, f32, f32)>::new();
-            for &(x, y, ..) in &chars {
-                if x < b[0] || x > b[2] || y < b[1] || y > b[3] {
-                    continue;
-                }
-                let line = lines.entry((y * 2.).round() as i32).or_insert((0, x, x));
-                line.0 += 1;
-                line.1 = line.1.min(x);
-                line.2 = line.2.max(x);
-            }
-            (lines
-                .values()
-                .filter(|&&(count, left, right)| count >= 20 && right - left >= (b[2] - b[0]) * 0.6)
-                .count()
-                >= 3)
-                .then_some(*b)
+            Some(*b)
         })
         .collect();
+    // Publishers often paint a callout as overlapping rectangles, one per
+    // paragraph/title. Classify the connected backdrop, not each fragment:
+    // otherwise a one-line title or two-line continuation becomes a figure.
+    let mut merged_fills: Vec<[f32; 4]> = Vec::new();
+    for mut b in filled.drain(..) {
+        loop {
+            let matching = merged_fills.iter().position(|p| {
+                (b[0] - p[0]).abs() <= 1.
+                    && (b[2] - p[2]).abs() <= 1.
+                    && b[1] <= p[3] + 1.
+                    && p[1] <= b[3] + 1.
+            });
+            let Some(i) = matching else { break };
+            let p = merged_fills.swap_remove(i);
+            b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[2]), b[3].max(p[3])];
+        }
+        merged_fills.push(b);
+    }
+    let mut panels = Vec::new();
     // Border-only callouts may be four filled strips or one stroked rectangle.
     // Their text geometry, rather than a fill color or a NOTE keyword, proves
     // that these rules frame flowing prose. This also handles continued panels.
@@ -496,6 +500,31 @@ fn text_panels(page: &PdfPage<'_>) -> (std::collections::HashSet<usize>, Vec<[f3
                 });
         long_lines || titled
     };
+    for b in merged_fills {
+        let mut rows = std::collections::BTreeMap::<i32, (usize, f32, f32, f32)>::new();
+        for &(x, y, _, size, _) in &chars {
+            if x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3] {
+                let row = rows.entry((y * 2.).round() as i32).or_insert((0, x, x, size));
+                row.0 += 1;
+                row.1 = row.1.min(x);
+                row.2 = row.2.max(x);
+                row.3 = row.3.max(size);
+            }
+        }
+        let prose_rows: Vec<_> = rows.values().filter(|&&(count, left, right, _)| {
+            count >= 20
+                && right - left >= (b[2] - b[0]) * 0.6
+                && left <= b[0] + (b[2] - b[0]) * 0.08
+        }).collect();
+        // Short shaded continuations also qualify, but a large chart with one
+        // sentence-like label does not. Long panels still need repeated prose.
+        let short_prose = !prose_rows.is_empty()
+            && b[3] - b[1] <= (rows.len() as f32 + 2.)
+                * prose_rows.iter().map(|row| row.3).fold(0., f32::max) * 1.5;
+        if contains_prose(b) || short_prose {
+            panels.push(b);
+        }
+    }
     for (_, b, rectangle, _) in &paths {
         if *rectangle
             && b[2] - b[0] >= page.width().value * 0.5
@@ -533,7 +562,12 @@ fn text_panels(page: &PdfPage<'_>) -> (std::collections::HashSet<usize>, Vec<[f3
     }
     let indices = paths
         .into_iter()
-        .filter_map(|(i, b, rectangle, _)| {
+        .filter_map(|(i, b, rectangle, color)| {
+            let light_fill = color.as_ref().is_some_and(|c| {
+                c.alpha() > 0 && c.red() >= 230 && c.green() >= 230 && c.blue() >= 230
+                    && c.red().abs_diff(c.green()) <= 10
+                    && c.green().abs_diff(c.blue()) <= 10
+            });
             let panel_edge = rectangle
                 && panels.iter().any(|p| {
                     b[0] >= p[0] - 1.
@@ -542,12 +576,21 @@ fn text_panels(page: &PdfPage<'_>) -> (std::collections::HashSet<usize>, Vec<[f3
                         && b[3] <= p[3] + 1.
                         && (b[2] - b[0] <= 2.
                             || b[3] - b[1] <= 2.
-                            || b.iter().zip(p).all(|(a, b)| (a - b).abs() <= 1.))
+                            || b.iter().zip(p).all(|(a, b)| (a - b).abs() <= 1.)
+                            || (light_fill && (b[0] - p[0]).abs() <= 1.
+                                && (b[2] - p[2]).abs() <= 1.))
                 });
             (panel_edge || extends_across_page(b, page.width().value, page.height().value))
                 .then_some(i)
         })
         .collect();
+    // A qualifying fill can contain several independently qualifying source
+    // rectangles. Render one native callout, never duplicate overlapping text.
+    let outer = panels.clone();
+    panels.retain(|b| !outer.iter().any(|p| {
+        b[0] >= p[0] && b[1] >= p[1] && b[2] <= p[2] && b[3] <= p[3]
+            && (p[2] - p[0]) * (p[3] - p[1]) > (b[2] - b[0]) * (b[3] - b[1]) + 1.
+    }));
     panels.sort_by(|a, b| b[3].total_cmp(&a[3]));
     panels.dedup_by(|a, b| a.iter().zip(b.iter()).all(|(a, b)| (a - b).abs() <= 1.));
     (indices, panels)
@@ -816,7 +859,18 @@ pub(crate) fn reading_figures(
     let mut figures = Vec::new();
     for region in regions {
         let index = region.indices[0];
-        let bounds = region.with_labels(&labels);
+        let mut bounds = region.with_labels(&labels);
+        if !region.raster {
+            let (left, bottom) = page.pixels_to_points(bounds[0] as i32, bounds[3] as i32, &config)?;
+            let (right, top) = page.pixels_to_points(bounds[2] as i32, bounds[1] as i32, &config)?;
+            if let Some(b) = crate::pdf_code::diagram_callout_bounds(
+                page, [left.value, bottom.value, right.value, top.value],
+            ) {
+                let (x0, y1) = page.points_to_pixels(PdfPoints::new(b[0]), PdfPoints::new(b[1]), &config)?;
+                let (x1, y0) = page.points_to_pixels(PdfPoints::new(b[2]), PdfPoints::new(b[3]), &config)?;
+                bounds = [x0.max(0) as u32, y0.max(0) as u32, (x1.max(0) as u32).min(width), (y1.max(0) as u32).min(height)];
+            }
+        }
         let [left, top, right, bottom] = bounds;
         let mut png = std::io::Cursor::new(Vec::new());
         // Keep source-page geometry for ordering/omission, but repair a

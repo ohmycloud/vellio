@@ -128,6 +128,21 @@ pub fn validate_endpoint(base: &str) -> Result<()> {
 }
 pub trait Transport {
     fn model(&self) -> &str;
+    fn provider(&self) -> Option<Provider> {
+        None
+    }
+    fn request_with_identity(
+        &self,
+        messages: Value,
+        cancel: &AtomicBool,
+        delta: &mut dyn FnMut(&str),
+    ) -> Result<ModelAnswer> {
+        self.request(messages, cancel, delta)
+            .map(|text| ModelAnswer {
+                text,
+                identity: ModelIdentity::new(self.model(), self.provider()),
+            })
+    }
     fn request(
         &self,
         messages: Value,
@@ -136,6 +151,25 @@ pub trait Transport {
     ) -> Result<String>;
 }
 impl Transport for Config {
+    fn provider(&self) -> Option<Provider> {
+        Some(Provider::Api)
+    }
+    fn request_with_identity(
+        &self,
+        messages: Value,
+        cancel: &AtomicBool,
+        delta: &mut dyn FnMut(&str),
+    ) -> Result<ModelAnswer> {
+        let mut reported = None;
+        let text = stream_effort_recorded(self, messages, "", cancel, delta, &mut reported)?;
+        Ok(ModelAnswer {
+            text,
+            identity: ModelIdentity::new(
+                reported.as_deref().unwrap_or(&self.model),
+                Some(Provider::Api),
+            ),
+        })
+    }
     fn model(&self) -> &str {
         &self.model
     }
@@ -186,6 +220,9 @@ impl Connection {
     }
 }
 impl Transport for Connection {
+    fn provider(&self) -> Option<Provider> {
+        Some(self.profile.provider)
+    }
     fn model(&self) -> &str {
         &self.profile.model
     }
@@ -195,12 +232,37 @@ impl Transport for Connection {
         cancel: &AtomicBool,
         delta: &mut dyn FnMut(&str),
     ) -> Result<String> {
-        if let Some(config) = &self.api {
-            return stream_effort(config, messages, &self.profile.reasoning, cancel, delta);
-        }
-        let answer = cli_request(&self.profile, messages, cancel)?;
-        delta(&answer);
-        Ok(answer)
+        self.request_with_identity(messages, cancel, delta)
+            .map(|answer| answer.text)
+    }
+    fn request_with_identity(
+        &self,
+        messages: Value,
+        cancel: &AtomicBool,
+        delta: &mut dyn FnMut(&str),
+    ) -> Result<ModelAnswer> {
+        let mut reported = None;
+        let text = if let Some(config) = &self.api {
+            stream_effort_recorded(
+                config,
+                messages,
+                &self.profile.reasoning,
+                cancel,
+                delta,
+                &mut reported,
+            )?
+        } else {
+            let text = cli_request(&self.profile, messages, cancel, &mut reported)?;
+            delta(&text);
+            text
+        };
+        Ok(ModelAnswer {
+            text,
+            identity: ModelIdentity::new(
+                reported.as_deref().unwrap_or(&self.profile.model),
+                Some(self.profile.provider),
+            ),
+        })
     }
 }
 pub fn cli_executable(provider: Provider, configured: &str) -> Result<PathBuf> {
@@ -232,16 +294,24 @@ pub fn cli_executable(provider: Provider, configured: &str) -> Result<PathBuf> {
         .find(|p| p.is_file())
         .with_context(|| format!("{name} is not installed; set its executable path in Settings"))
 }
-fn cli_request(profile: &ModelProfile, messages: Value, cancel: &AtomicBool) -> Result<String> {
+fn cli_request(
+    profile: &ModelProfile,
+    messages: Value,
+    cancel: &AtomicBool,
+    reported: &mut Option<String>,
+) -> Result<String> {
     ensure!(!cancel.load(Ordering::Relaxed), "AI request cancelled");
     let executable = cli_executable(profile.provider, &profile.executable)?;
     let work = tempfile::Builder::new().prefix("easyread-ai-").tempdir()?;
     let output = work.path().join("answer.txt");
+    // A private temporary file avoids a full stderr pipe blocking cancellation.
+    // Retain only the provider's model header, never logs/prompts in user data.
+    let diagnostics = work.path().join("metadata.log");
     let mut command = Command::new(executable);
     command
         .current_dir(work.path())
         .stdin(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::from(std::fs::File::create(&diagnostics)?));
     match profile.provider {
         Provider::ClaudeCode => {
             command.args([
@@ -366,6 +436,7 @@ fn cli_request(profile: &ModelProfile, messages: Value, cancel: &AtomicBool) -> 
                 !v["is_error"].as_bool().unwrap_or(false),
                 "Claude Code returned an error; check login and model ID"
             );
+            *reported = super::identity::claude_reported_model(&v);
             v["result"]
                 .as_str()
                 .context("Claude Code returned no answer")?
@@ -376,6 +447,11 @@ fn cli_request(profile: &ModelProfile, messages: Value, cancel: &AtomicBool) -> 
                 std::fs::metadata(&output)?.len() <= 16 * 1024 * 1024,
                 "CLI answer too large"
             );
+            let mut header = Vec::new();
+            std::fs::File::open(&diagnostics)?
+                .take(64 * 1024)
+                .read_to_end(&mut header)?;
+            *reported = super::identity::codex_reported_model(&String::from_utf8_lossy(&header));
             std::fs::read_to_string(output)?
         }
         Provider::Api => unreachable!(),

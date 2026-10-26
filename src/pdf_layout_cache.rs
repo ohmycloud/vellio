@@ -12,9 +12,8 @@ use std::{
 };
 
 // Bump when PDF recovery semantics change; old layouts must not be reused.
-// v12 also recovers captioned tables with a single header rule and vertical
-// separators; rebuild v11 presentations that misclassified them as images.
-const VERSION: u32 = 13;
+// v17 repairs UTF-16 mathematical letters, annotated operators and underbraces.
+const VERSION: u32 = 17;
 pub const LOOKAHEAD_PAGES: usize = 16;
 pub const TRAILING_PAGES: usize = 4;
 pub const BATCH_SIZE: usize = 4;

@@ -447,3 +447,42 @@ fn home_brand_icon_keeps_full_colour_artwork_across_theme_changes(cx: &mut TestA
         assert!(std::sync::Arc::ptr_eq(&view.home.brand_icon, &artwork));
     });
 }
+
+#[gpui_kit::test]
+fn reader_brand_icon_uses_shared_pelican_and_returns_to_library(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let temp = tempfile::tempdir().unwrap();
+    let library = Library::open(temp.path()).unwrap();
+    let mut reader = None;
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let raw = json!({"paper":{"meta":{"title_en":"Logo test"},"blocks":[]},"reader":{}});
+        let view = cx.new(|cx| {
+            let mut view = ReaderView::new(raw, Some(library), None, window, cx);
+            view.home.visible = false;
+            view
+        });
+        reader = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    let reader = reader.unwrap();
+    for _ in 0..3 {
+        draw(cx);
+    }
+    let bounds = cx.debug_bounds("reader-brand-icon").unwrap();
+    assert_eq!(
+        bounds.size,
+        gpui_kit::size(gpui_kit::px(28.), gpui_kit::px(28.))
+    );
+    let artwork = reader.read_with(cx, |view, _| view.home.brand_icon.clone());
+    cx.simulate_click(bounds.center(), gpui_kit::Modifiers::default());
+    for _ in 0..3 {
+        draw(cx);
+    }
+    reader.read_with(cx, |view, _| {
+        assert!(view.home.visible);
+        assert!(view.navigation.is_none());
+        assert!(std::sync::Arc::ptr_eq(&view.home.brand_icon, &artwork));
+    });
+    assert!(cx.debug_bounds("home-brand-icon").is_some());
+    assert!(cx.debug_bounds("reader-brand-icon").is_none());
+}

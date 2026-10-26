@@ -1,81 +1,22 @@
-//! Shared, cached syntax definitions for native book and chat code blocks.
-use gpui_kit::{FontStyle, FontWeight, HighlightStyle, base::text::CodeBlock, rgb};
-use std::{ops::Range, sync::LazyLock};
-use syntect::{
-    easy::HighlightLines,
-    highlighting::{FontStyle as SyntaxFontStyle, ThemeSet},
-    parsing::SyntaxSet,
-    util::LinesWithEndings,
+//! Shared, cached syntax definitions for native book, note and chat code blocks.
+use easyread_gpui::code_syntax::{self, inferred_language};
+use gpui_kit::{
+    App, FontStyle, FontWeight, HighlightStyle,
+    base::{TextViewDefaults, text::CodeBlock},
+    rgb,
 };
+use std::ops::Range;
+use syntect::highlighting::FontStyle as SyntaxFontStyle;
 
-static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
-static THEMES: LazyLock<ThemeSet> = LazyLock::new(ThemeSet::load_defaults);
-
-// EPUBs frequently omit language metadata. Guess only distinctive syntax;
-// prose, output, pseudocode and an explicit unknown language remain plain text.
-fn inferred_language(code: &str) -> Option<&'static str> {
-    let source = code.trim();
-    if source.starts_with("Traceback (most recent call last)") {
-        return None;
+/// Theme synchronization can replace TextView defaults. Install lazily at each
+/// rich-text entry point, preserving custom callbacks and their cache identity.
+pub(super) fn ensure_highlighter(cx: &mut App) {
+    if !TextViewDefaults::global(cx).has_code_block_highlighter() {
+        let defaults = TextViewDefaults::global(cx)
+            .clone()
+            .with_code_block_highlighter(highlight);
+        cx.set_global(defaults);
     }
-    if (source.starts_with('{') || source.starts_with('['))
-        && serde_json::from_str::<serde_json::Value>(source).is_ok()
-    {
-        return Some("json");
-    }
-    let lines: Vec<_> = source.lines().map(str::trim).collect();
-    if lines.iter().any(|line| {
-        let colon = line.ends_with(':')
-            || line
-                .rsplit_once('#')
-                .is_some_and(|(code, _)| code.trim_end().ends_with(':'));
-        (line.starts_with("def ") || line.starts_with("async def ") || line.starts_with("class "))
-            && colon
-            || line.starts_with("from ") && line.contains(" import ")
-            || line.starts_with("import ") && !line.contains([';', '{']) && !line.contains(" from ")
-            || (line.starts_with("with ")
-                || line.starts_with("for ")
-                || line.starts_with("if ")
-                || line.starts_with("elif ")
-                || line.starts_with("except "))
-                && colon
-            || line.starts_with("print(") && !line.ends_with(';')
-    }) {
-        return Some("python");
-    }
-    if lines.iter().any(|line| {
-        line.starts_with("fn ")
-            || line.starts_with("pub fn ")
-            || line.starts_with("use ") && line.contains("::")
-    }) {
-        return Some("rust");
-    }
-    if lines.iter().any(|line| {
-        line.starts_with("function ")
-            || line.starts_with("export default ")
-            || line.starts_with("const ") && line.contains("=>")
-    }) {
-        return Some("javascript");
-    }
-    if lines.iter().any(|line| {
-        [
-            "#!/bin/bash",
-            "#!/bin/sh",
-            "#!/usr/bin/env bash",
-            "echo ",
-            "export ",
-            "pip install ",
-            "pip3 install ",
-            "npm install ",
-            "cargo ",
-        ]
-        .iter()
-        .any(|prefix| line.starts_with(prefix))
-            || line.contains("=$(")
-    }) {
-        return Some("bash");
-    }
-    None
 }
 
 /// Use a document hint only when several distinctive examples overwhelmingly
@@ -221,43 +162,12 @@ pub(super) fn epub_html(source: String, language: Option<&str>) -> String {
 }
 
 pub fn highlight(block: &CodeBlock) -> Vec<(Range<usize>, HighlightStyle)> {
-    let code = block.code();
-    let declared = block.lang();
-    let lang = declared
-        .as_deref()
-        .filter(|lang| !lang.trim().is_empty())
-        .map(str::to_ascii_lowercase)
-        .or_else(|| inferred_language(&code).map(str::to_owned))
-        .unwrap_or_default();
-    let lang = match lang.as_str() {
-        "sh" | "shell" | "console" => "bash",
-        "py" | "python3" => "python",
-        "js" | "node" => "javascript",
-        "rs" => "rust",
-        "c++" => "cpp",
-        "c#" => "cs",
-        other => other,
-    };
-    let syntax = SYNTAXES
-        .find_syntax_by_token(lang)
-        .or_else(|| {
-            (lang.is_empty())
-                .then(|| SYNTAXES.find_syntax_by_first_line(&code))
-                .flatten()
-        })
-        .unwrap_or_else(|| SYNTAXES.find_syntax_plain_text());
-    let mut highlighter = HighlightLines::new(syntax, &THEMES.themes["InspiredGitHub"]);
-    let mut highlights = Vec::new();
-    let mut offset = 0;
-    for line in LinesWithEndings::from(&code) {
-        let Ok(runs) = highlighter.highlight_line(line, &SYNTAXES) else {
-            offset += line.len();
-            continue;
-        };
-        for (style, text) in runs {
+    code_syntax::highlight(&block.code(), block.lang().as_deref())
+        .into_iter()
+        .map(|(range, style)| {
             let color = style.foreground;
-            highlights.push((
-                offset..offset + text.len(),
+            (
+                range,
                 HighlightStyle {
                     color: Some(
                         rgb((u32::from(color.r) << 16)
@@ -275,11 +185,9 @@ pub fn highlight(block: &CodeBlock) -> Vec<(Range<usize>, HighlightStyle)> {
                         .then_some(FontStyle::Italic),
                     ..Default::default()
                 },
-            ));
-            offset += text.len();
-        }
-    }
-    highlights
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -427,6 +335,35 @@ mod tests {
             "<p><span>value = 42</span></p>",
         ] {
             assert_eq!(epub_html(html.to_owned(), Some("python")), html);
+        }
+    }
+
+    #[test]
+    fn unlabeled_note_keyword_calls_are_highlighted_without_guessing_plain_output() {
+        let source = "# Register tool\ntools = Tools()\ntools.add_tool(\n    name=\"multiply\",\n    func=multiply,\n    description=\"两个数相乘\"\n)\n";
+        assert_eq!(inferred_language(source), Some("python"));
+        for language in [None, Some("python"), Some("py"), Some("python3")] {
+            let runs = highlight(&CodeBlock::from_code(source, language));
+            assert_eq!(runs.first().unwrap().0.start, 0);
+            assert_eq!(runs.last().unwrap().0.end, source.len());
+            assert!(runs.windows(2).all(|pair| pair[0].0.end == pair[1].0.start));
+            assert!(
+                runs.iter()
+                    .all(|(range, _)| source.get(range.clone()).is_some())
+            );
+            assert!(runs.iter().any(|(_, style)| style.color != runs[0].1.color));
+        }
+        for source in [
+            "name = \"multiply\"",
+            "A note about tools (\n    name=\"multiply\"\n)",
+            "tensor(\n    dtype=\"float32\"\n)",
+            "tool(\n    name=\"multiply\";\n)",
+        ] {
+            assert_eq!(inferred_language(source), None, "{source}");
+        }
+        for language in ["text", "plaintext", "unknown-language"] {
+            let runs = highlight(&CodeBlock::from_code(source, Some(language)));
+            assert!(runs.iter().all(|(_, style)| style.color == runs[0].1.color));
         }
     }
 

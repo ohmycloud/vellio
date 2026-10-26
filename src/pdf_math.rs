@@ -2,6 +2,8 @@
 //! Fractions, radicals and scripts become TeX, then Typst's native vector frame.
 //! No page rasterization, bitmap crops or SVG image elements.
 use super::Glyph;
+#[path = "pdf_math_structure.rs"]
+mod structure;
 use pdfium_render::prelude::*;
 use std::{
     collections::{HashMap, HashSet},
@@ -21,6 +23,9 @@ struct Token {
     math_roman: bool,
     italic: bool,
     mono: bool,
+    bold: bool,
+    calligraphic: bool,
+    extension: bool,
 }
 #[derive(Clone, Copy)]
 struct Rule([f32; 4]);
@@ -51,22 +56,28 @@ fn key(x: f32, y: f32, ch: char) -> (i32, i32, char) {
 fn tokens(page: &PdfPage<'_>, glyphs: &[Glyph]) -> anyhow::Result<Vec<Token>> {
     let text = page.text()?;
     let mut metadata = HashMap::new();
-    for g in text.chars().iter() {
-        let Some(ch) = g
-            .unicode_char()
-            .filter(|ch| !ch.is_whitespace() && !ch.is_control())
-        else {
-            continue;
-        };
+    for (index, ch) in super::decoded_characters(&text) {
+        let g = text.chars().get(index)?;
         let Ok((x, y)) = g.origin() else { continue };
         let font = g.font_name().to_ascii_lowercase();
+        let extension = font.contains("cmex") || font.contains("txex");
+        if ch.is_whitespace()
+            || (ch.is_control() && !(extension && matches!(ch, '\u{12}' | '\u{13}')))
+        {
+            continue;
+        }
         let Ok(b) = g.tight_bounds() else { continue };
-        let math = ["cmmi", "cmsy", "cmex", "cmmib", "math", "msam", "msbm"]
-            .iter()
-            .any(|s| font.contains(s));
+        let math = [
+            "cmmi", "cmsy", "cmex", "cmmib", "math", "msam", "msbm", "newtxmi", "newtxsy",
+            "newtxex", "txmi", "txsy", "txex",
+        ]
+        .iter()
+        .any(|s| font.contains(s));
         // Known Computer Modern extension encodings sometimes expose legacy
         // Latin code points instead of Unicode mathematical operators.
-        let mapped = if font.contains("cmex") {
+        let mapped = if extension && matches!(ch, '\u{12}' | '\u{13}') {
+            if ch == '\u{12}' { '(' } else { ')' }
+        } else if font.contains("cmex") {
             match ch {
                 'P' => '∑',
                 'Q' => '∏',
@@ -81,7 +92,9 @@ fn tokens(page: &PdfPage<'_>, glyphs: &[Glyph]) -> anyhow::Result<Vec<Token>> {
             (
                 mapped,
                 math,
-                font.contains("cmr"),
+                font.contains("cmr") || font.contains("termes"),
+                extension,
+                (font.contains("txsy") || font.contains("cmsy")) && ch.is_ascii_uppercase(),
                 [
                     b.left().value,
                     b.bottom().value,
@@ -95,7 +108,11 @@ fn tokens(page: &PdfPage<'_>, glyphs: &[Glyph]) -> anyhow::Result<Vec<Token>> {
         .iter()
         .enumerate()
         .filter_map(|(index, g)| {
-            let &(ch, math, math_roman, bounds) = metadata.get(&key(g.x, g.y, g.ch))?;
+            let &(ch, math, math_roman, extension, calligraphic, bounds) =
+                metadata.get(&key(g.x, g.y, g.ch))?;
+            if matches!(ch, '\u{FE00}'..='\u{FE0F}') {
+                return None;
+            }
             Some(Token {
                 index,
                 ch,
@@ -108,6 +125,9 @@ fn tokens(page: &PdfPage<'_>, glyphs: &[Glyph]) -> anyhow::Result<Vec<Token>> {
                 math_roman,
                 italic: g.italic,
                 mono: g.mono,
+                bold: g.bold,
+                calligraphic,
+                extension,
             })
         })
         .collect())
@@ -153,7 +173,8 @@ fn fraction_parts(ts: &[Token], r: Rule) -> Option<(Vec<Token>, Vec<Token>)> {
         return None;
     }
     let eligible = |t: &&Token| {
-        t.x >= r.0[0] - size * 0.25
+        !(t.extension && "()|{z}".contains(t.ch))
+            && t.x >= r.0[0] - size * 0.25
             && t.x <= r.0[2] + size * if t.size < size * 0.9 { 0.5 } else { 0.1 }
             && t.right <= r.0[2] + size * 0.6
             && (t.y - r.y()).abs() <= size * 1.8
@@ -191,6 +212,40 @@ fn dominant_y(atoms: &[Atom], size: f32) -> f32 {
     bins.into_iter().max_by_key(|b| b.1).map_or(0., |b| b.0)
 }
 fn symbol(ch: char) -> Option<String> {
+    // Unicode mathematical alphabets carry style in the scalar, not only the
+    // PDF font flags. Decode them before passing meaningful TeX to Typst.
+    let code = ch as u32;
+    for (start, upper, style) in [
+        (0x1D400, true, "mathbf"),
+        (0x1D41A, false, "mathbf"),
+        (0x1D434, true, ""),
+        (0x1D44E, false, ""),
+        (0x1D468, true, "boldsymbol"),
+        (0x1D482, false, "boldsymbol"),
+        (0x1D49C, true, "mathcal"),
+        (0x1D4B6, false, "mathcal"),
+        (0x1D538, true, "mathbb"),
+        (0x1D552, false, "mathbb"),
+        (0x1D5A0, true, "mathsf"),
+        (0x1D5BA, false, "mathsf"),
+        (0x1D670, true, "mathtt"),
+        (0x1D68A, false, "mathtt"),
+    ] {
+        if (start..start + 26).contains(&code) {
+            let letter = char::from_u32(if upper { 65 } else { 97 } + code - start)?;
+            return Some(if style.is_empty() {
+                letter.to_string()
+            } else {
+                format!("\\{style}{{{letter}}}")
+            });
+        }
+    }
+    const GREEK: &str = "ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡϴΣΤΥΦΧΨΩ∇αβγδεζηθικλμνξοπρςστυφχψω∂ϵϑϰϕϱϖ";
+    for start in [0x1D6A8, 0x1D6E2, 0x1D71C, 0x1D756, 0x1D790] {
+        if (start..start + 58).contains(&code) {
+            return symbol(GREEK.chars().nth((code - start) as usize)?);
+        }
+    }
     let named = match ch {
         'α' => "alpha",
         'β' => "beta",
@@ -200,6 +255,12 @@ fn symbol(ch: char) -> Option<String> {
         'ζ' => "zeta",
         'η' => "eta",
         'θ' => "theta",
+        'ϑ' => "vartheta",
+        'ϰ' => "varkappa",
+        'ϱ' => "varrho",
+        'ϖ' => "varpi",
+        'ϴ' => "Theta",
+        'ς' => "varsigma",
         'ι' => "iota",
         'κ' => "kappa",
         'λ' => "lambda",
@@ -245,6 +306,10 @@ fn symbol(ch: char) -> Option<String> {
         '·' => "cdot",
         '→' => "to",
         'ℓ' => "ell",
+        'ℎ' => return Some("h".into()),
+        '★' | '⋆' => "star",
+        '⊙' => "odot",
+        'ℒ' => return Some("\\mathcal{L}".into()),
         'ℝ' => "mathbb{R}",
         _ => "",
     };
@@ -265,7 +330,7 @@ fn parse(ts: &[Token], rs: &[Rule], depth: usize) -> Option<String> {
     }
     let size = ts.iter().map(|t| t.size).fold(0., f32::max);
     let mut used = HashSet::new();
-    let mut atoms = vec![];
+    let mut atoms = structure::annotated_atoms(ts, rs, depth, &mut used)?;
     let mut bars = rs.to_vec();
     bars.sort_by(|a, b| (b.0[2] - b.0[0]).total_cmp(&(a.0[2] - a.0[0])));
     for r in bars {
@@ -305,6 +370,11 @@ fn parse(ts: &[Token], rs: &[Rule], depth: usize) -> Option<String> {
             .filter(|t| {
                 !used.contains(&t.index)
                     && t.index != root.index
+                    && (t.math
+                        || t.italic
+                        || t.math_roman
+                        || t.ch.is_ascii_digit()
+                        || "+-=*/()[]|".contains(t.ch))
                     && t.x >= roof.0[0] - size * 0.25
                     && t.x < roof.0[2] + size * 0.5
                     && t.right <= roof.0[2] + size * 0.75
@@ -333,18 +403,25 @@ fn parse(ts: &[Token], rs: &[Rule], depth: usize) -> Option<String> {
             word: false,
         });
     }
+    atoms.extend(structure::operator_atoms(ts, &mut used));
     for t in ts.iter().filter(|t| !used.contains(&t.index)) {
         atoms.push(Atom {
             x: t.x,
             right: t.right,
             y: t.y,
             size: t.size,
-            tex: symbol(t.ch)?,
-            word: !t.math && !t.italic && t.ch.is_ascii_alphabetic(),
+            tex: if t.calligraphic {
+                format!("\\mathcal{{{}}}", t.ch)
+            } else if t.bold && t.ch.is_ascii_alphabetic() {
+                format!("\\mathbf{{{}}}", t.ch)
+            } else {
+                symbol(t.ch)?
+            },
+            word: !t.math && !t.italic && !t.bold && t.ch.is_ascii_alphabetic(),
         });
     }
     let mut out = render_atoms(atoms, depth)?;
-    if out.contains("\\frac") || out.contains("\\sqrt") {
+    if out.contains("\\frac") || out.contains("\\sqrt") || out.contains("\\underbrace") {
         let mut stack = vec![];
         let mut pairs = vec![];
         for (i, ch) in out.char_indices() {
@@ -489,6 +566,10 @@ fn prose(ts: &[Token]) -> bool {
     prose_words(ts) >= 3
 }
 
+#[cfg(test)]
+#[path = "pdf_math_tests.rs"]
+mod tests;
+
 pub(super) fn recover(
     page: &PdfPage<'_>,
     glyphs: &[Glyph],
@@ -501,6 +582,7 @@ pub(super) fn recover(
         .filter(|t| !blocked.contains(&t.index))
         .collect();
     let rs = rules(page);
+    let braces = structure::underbraces(&ts);
     let mut line_indices = vec![0; glyphs.len()];
     let mut line = 0;
     for (i, g) in glyphs.iter().enumerate() {
@@ -524,18 +606,37 @@ pub(super) fn recover(
             .collect();
         let min_x = base.iter().map(|t| t.x).fold(f32::INFINITY, f32::min);
         let max_x = base.iter().map(|t| t.right).fold(0., f32::max);
+        let annotations: Vec<_> = braces
+            .iter()
+            .filter(|brace| {
+                brace.pieces[0].x >= min_x - equal.size * 0.3
+                    && brace.pieces[3].right <= max_x + equal.size * 0.3
+                    && (brace.body[0].y - equal.y).abs() <= equal.size * 1.8
+            })
+            .collect();
+        let annotation_indices: HashSet<_> = annotations
+            .iter()
+            .flat_map(|b| {
+                b.body
+                    .iter()
+                    .chain(&b.pieces)
+                    .chain(&b.caption)
+                    .map(|t| t.index)
+            })
+            .collect();
         let row: Vec<_> = ts
             .iter()
             .filter(|t| {
-                (t.y - equal.y).abs() <= equal.size * 1.8
-                    && t.x >= min_x - equal.size * 0.3
-                    && t.right <= max_x + equal.size * 0.3
-                    && ((t.y - equal.y).abs() <= equal.size * 0.12
-                        || t.math
-                        || t.italic
-                        || t.size < equal.size * 0.9
-                        || t.ch == '√'
-                        || t.ch.is_ascii_digit())
+                annotation_indices.contains(&t.index)
+                    || ((t.y - equal.y).abs() <= equal.size * 1.8
+                        && t.x >= min_x - equal.size * 0.3
+                        && t.right <= max_x + equal.size * 0.3
+                        && ((t.y - equal.y).abs() <= equal.size * 0.12
+                            || t.math
+                            || t.italic
+                            || t.size < equal.size * 0.9
+                            || t.ch == '√'
+                            || t.ch.is_ascii_digit()))
             })
             .cloned()
             .collect();
@@ -544,7 +645,16 @@ pub(super) fn recover(
             || row
                 .iter()
                 .any(|t| t.mono || omitted.contains(&line_indices[t.index]))
-            || prose(&row)
+            || prose(
+                &row.iter()
+                    .filter(|t| {
+                        !annotations
+                            .iter()
+                            .any(|b| b.caption.iter().any(|c| c.index == t.index))
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )
         {
             continue;
         }
@@ -564,7 +674,7 @@ pub(super) fn recover(
             || (None, HashSet::new()),
             |(number, labels)| (Some(number), labels),
         );
-        if number.is_none() && prose_words(&base) > 0 {
+        if number.is_none() && annotations.is_empty() && prose_words(&base) > 0 {
             continue;
         }
         let body: Vec<_> = row
@@ -590,6 +700,7 @@ pub(super) fn recover(
             lines.contains(&line_indices[i])
                 && !g.ch.is_whitespace()
                 && !g.ch.is_control()
+                && !matches!(g.ch, '\u{FE00}'..='\u{FE0F}')
                 && !row.iter().any(|t| t.index == i)
         }) {
             continue;
@@ -658,6 +769,11 @@ pub(super) fn recover(
                 ts.iter()
                     .filter(|t| {
                         t.index != root.index
+                            && (t.math
+                                || t.italic
+                                || t.math_roman
+                                || t.ch.is_ascii_digit()
+                                || "+-=*/()[]|".contains(t.ch))
                             && t.x >= roof.0[0] - root.size * 0.25
                             && t.x < roof.0[2] + root.size * 0.5
                             && t.right <= roof.0[2] + root.size * 0.75

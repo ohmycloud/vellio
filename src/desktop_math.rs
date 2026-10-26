@@ -6,8 +6,8 @@ use gpui_kit::base::text::{
     markdown_ast,
 };
 use gpui_kit::{
-    App, InteractiveElement, IntoElement, ParentElement, PathBuilder, Styled, Window, canvas, div,
-    point, px,
+    App, AppContext, InteractiveElement, IntoElement, ParentElement, PathBuilder, Styled, Window,
+    canvas, div, point, px,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -19,11 +19,14 @@ use std::{
 pub(super) struct MarkdownCache {
     html: HashMap<String, (String, String)>,
     requested: HashSet<(String, bool)>,
+    // Replies outlive virtualized reader rows, including their text selection.
+    pub(super) reply_views: HashMap<String, gpui_kit::Entity<gpui_kit::base::TextViewState>>,
 }
 impl MarkdownCache {
     pub(super) fn clear(&mut self) {
         self.html.clear();
         self.requested.clear();
+        self.reply_views.clear();
     }
     fn prepare(&mut self, id: &str, source: &str) -> (String, Vec<(String, bool)>) {
         if let Some((_, html)) = self.html.get(id).filter(|(old, _)| old == source) {
@@ -51,6 +54,7 @@ impl super::ReaderView {
         max_width: f32,
         cx: &mut gpui_kit::Context<Self>,
     ) -> gpui_kit::base::TextView {
+        super::code::ensure_highlighter(cx);
         let (html, pending) = self.rich_markdown_cache.borrow_mut().prepare(&id, source);
         if !pending.is_empty() {
             cx.spawn(async move |this, cx| {
@@ -70,7 +74,30 @@ impl super::ReaderView {
             })
             .detach();
         }
-        gpui_kit::base::TextView::html(gpui_kit::SharedString::from(id), html).markdown_extensions(
+        let mut code_style = gpui_kit::StyleRefinement::default()
+            .bg(gpui_kit::rgba(0x00000000))
+            .whitespace_nowrap();
+        code_style.overflow.x = Some(gpui_kit::Overflow::Scroll);
+        let style = gpui_kit::base::TextViewDefaults::global(cx)
+            .style()
+            .cloned()
+            .unwrap_or_default()
+            .with_code_block(code_style);
+        let text = if id.starts_with("reply-body-") {
+            let mut cache = self.rich_markdown_cache.borrow_mut();
+            let state = cache
+                .reply_views
+                .entry(id)
+                .or_insert_with(|| cx.new(|cx| gpui_kit::base::TextViewState::html(&html, cx)));
+            state.update(cx, |view, cx| {
+                view.set_text(&html, cx);
+                view.set_track_paragraphs(true, cx);
+            });
+            gpui_kit::base::TextView::new(state)
+        } else {
+            gpui_kit::base::TextView::html(gpui_kit::SharedString::from(id), html)
+        };
+        text.style(style).markdown_extensions(
             gpui_kit::base::text::MarkdownExtensions::default().plugin(MathPlugin { max_width }),
         )
     }

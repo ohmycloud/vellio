@@ -6,10 +6,10 @@ Selected artwork: **A — orange-billed pelican on a mist-blue-grey rounded tile
 - `Vellio.svg`: editable master, matching the approved A concept.
 - `Vellio.png`: 1024 px transparent-canvas preview.
 - `Vellio-small.svg`: same silhouette and palette, with a larger eye and mouth opening for small displays.
-- `Vellio-small.png`: 64 px colour image embedded by the library header, displayed at 28 logical px without monochrome tinting.
+- `Vellio-small.png`: 64 px colour image shared by the library header and the reader's top-left library button, displayed at 28 logical px without monochrome tinting.
 - `Vellio.icns`: macOS standard and Retina sizes from 16 to 1024 px. Logical 16 px entries use the small-size cut.
 
-The previous book artwork is archived in `assets/branding/vellio/archive/book-icon/`. Functional book icons (Reading / Unread / navigation) are not rebranded.
+The previous book artwork is archived in `assets/branding/vellio/archive/book-icon/`. Functional book icons (Reading / Unread) are not rebranded; the reader's library navigation button uses the pelican logo.
 
 To regenerate on macOS with librsvg installed:
 

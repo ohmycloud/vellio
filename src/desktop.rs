@@ -71,6 +71,9 @@ mod inline_edit;
 #[cfg(all(test, feature = "desktop-ui-tests"))]
 #[path = "desktop_inline_edit_tests.rs"]
 mod inline_edit_tests;
+#[cfg(all(test, feature = "desktop-ui-tests"))]
+#[path = "desktop_margin_tests.rs"]
+mod margin_tests;
 #[path = "desktop_math.rs"]
 mod math;
 #[cfg(all(test, feature = "desktop-ui-tests"))]
@@ -79,6 +82,11 @@ mod note_hover_tests;
 #[cfg(all(test, feature = "desktop-ui-tests"))]
 #[path = "desktop_note_selection_tests.rs"]
 mod note_selection_tests;
+#[path = "desktop_pdf_flow.rs"]
+mod pdf_flow;
+#[cfg(all(test, feature = "desktop-ui-tests"))]
+#[path = "desktop_pdf_flow_tests.rs"]
+mod pdf_flow_tests;
 #[cfg(all(test, feature = "desktop-ui-tests"))]
 #[path = "desktop_placement_tests.rs"]
 mod placement_tests;
@@ -270,6 +278,7 @@ struct ReaderView {
     margin_writer: MarginWriter,
     margin_records: HashMap<String, Value>,
     margin_card_heights: HashMap<String, Pixels>,
+    discussion_scrolls: std::cell::RefCell<HashMap<String, ScrollHandle>>,
     block_bounds: HashMap<usize, Bounds<Pixels>>,
     annotation_jump_generation: usize,
     navigation_note: Option<Value>,
@@ -541,6 +550,7 @@ impl ReaderView {
             margin_writer: MarginWriter::default(),
             margin_records: HashMap::new(),
             margin_card_heights: HashMap::new(),
+            discussion_scrolls: Default::default(),
             block_bounds: HashMap::new(),
             annotation_jump_generation: 0,
             navigation_note: None,
@@ -797,6 +807,7 @@ impl ReaderView {
                                     view.margin_editor = None;
                                     view.margin_records.clear();
                                     view.margin_card_heights.clear();
+                                    view.discussion_scrolls.get_mut().clear();
                                     view.capture_inputs(cx);
                                     view.capture_position();
                                     view.flush_session();
@@ -3475,12 +3486,7 @@ impl ReaderView {
         }
         // ReaderViews can also be opened through import/recovery/test paths.
         // Do not rely solely on the outer application's one-time setup.
-        if !gpui_kit::base::TextViewDefaults::global(cx).has_code_block_highlighter() {
-            let defaults = gpui_kit::base::TextViewDefaults::global(cx)
-                .clone()
-                .with_code_block_highlighter(code::highlight);
-            cx.set_global(defaults);
-        }
+        code::ensure_highlighter(cx);
         let weak = cx.entity().downgrade();
         let text_size = self.appearance.font_size * typography::text_scale(secondary, caption);
         let family = self
@@ -4241,7 +4247,11 @@ impl ReaderView {
                     entries.push((
                         entry["id"].as_str().unwrap_or("ai-entry").to_owned(),
                         self.note_offset(entry, index, cx),
-                        self.discussion_card(entry, false, cx),
+                        div()
+                            .px(px(12.))
+                            .min_w_0()
+                            .child(self.discussion_card(entry, false, cx))
+                            .into_any_element(),
                     ));
                 }
             }
@@ -4279,9 +4289,16 @@ impl ReaderView {
                         .copied()
                         .unwrap_or(px(160.))
                     + px(18.);
-                column = column.child(div().mt(gap).mb(px(18.)).child(element));
+                column = column.child(div().flex_shrink_0().mt(gap).mb(px(18.)).child(element));
             }
-            Some(column.into_any_element())
+            // Personal notes must never be clipped to the source page height.
+            // Only a long AI answer gets its own persistent scroll viewport;
+            // limiting this entire column used to hide subsequent questions.
+            Some(
+                column
+                    .debug_selector(move || format!("pdf-margin-notes-{index}"))
+                    .into_any_element(),
+            )
         } else {
             None
         };
@@ -4459,17 +4476,20 @@ impl ReaderView {
                 .w(px(32.))
                 .h(px(32.))
                 .rounded(px(8.))
-                .icon(
-                    Icon::default()
-                        .path(if slot == 0 {
-                            "icons/book-open.svg"
-                        } else {
-                            "icons/list.svg"
-                        })
-                        .size(px(19.)),
-                )
+                .when(slot == 0, |b| {
+                    b.p_0().child(
+                        img(self.home.brand_icon.clone())
+                            .id("reader-brand-icon")
+                            .debug_selector(|| "reader-brand-icon".into())
+                            .size(px(28.))
+                            .flex_shrink_0()
+                            .object_fit(ObjectFit::Contain),
+                    )
+                })
+                .when(slot == 1, |b| {
+                    b.icon(Icon::default().path("icons/list.svg").size(px(19.)))
+                })
                 .accessibility_label(if slot == 0 { "文献库" } else { "目录" })
-                .when(slot == 0, |b| b.bg(rgb(0x326677)).text_color(rgb(0xfffaf0)))
                 .when(slot == 1 && self.navigation == Some(navigation), |b| {
                     b.bg(rgba(0x38748720)).text_color(rgb(0x387487))
                 })
@@ -5506,14 +5526,58 @@ impl ReaderView {
         let body = entry["body"].as_str().unwrap_or("").to_owned();
         let copy = body.clone();
         let id = entry["id"].as_str().unwrap_or("ai-entry").to_owned();
+        let weak = cx.entity().downgrade();
+        let measure_id = id.clone();
+        let scroll = self
+            .discussion_scrolls
+            .borrow_mut()
+            .entry(id.clone())
+            .or_default()
+            .clone();
+        let wheel_scroll = scroll.clone();
+        let height = (!drawer).then(|| {
+            self.state
+                .paper
+                .blocks
+                .iter()
+                .position(|b| entry["anchor"] == b.id)
+                .and_then(|i| self.pdf_margin_height(i, cx))
+                // Leave room for note metadata/actions, with at least two
+                // readable lines rather than a page-sized answer preview.
+                .map(|height| (height - px(240.)).max(px(48.)).min(px(420.)))
+                .unwrap_or(px(420.))
+        });
         div()
             .debug_selector(|| "annotation-ai-reply".into())
             .relative()
             .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
             .border_l_2()
             .border_color(rgb(0x387487))
             .pl(px(12.))
             .py(px(4.))
+            .child(
+                canvas(
+                    move |bounds, _, cx| {
+                        let _ = weak.update(cx, |this, cx| {
+                            if this
+                                .margin_card_heights
+                                .get(&measure_id)
+                                .is_none_or(|h| (*h - bounds.size.height).abs() > px(0.5))
+                            {
+                                this.margin_card_heights
+                                    .insert(measure_id.clone(), bounds.size.height);
+                                cx.notify();
+                            }
+                        });
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
             .when(drawer, |d| {
                 d.child(self.annotation_jump_bar(entry, false, cx))
             })
@@ -5521,19 +5585,49 @@ impl ReaderView {
                 div()
                     .text_size(px(12.))
                     .text_color(rgb(0x387487))
-                    .child(format!("AI · {}", entry["by"].as_str().unwrap_or("AI"))),
+                    .child(format!("AI · {}", ai::answer_model_label(entry))),
             )
             .child(
-                self.rich_markdown(format!("reply-body-{id}"), &body, 240., cx)
-                    .selectable(true)
-                    .text_size(px(13.5))
-                    .line_height(relative(1.72)),
+                div()
+                    .id(SharedString::from(format!("reply-scroll-{id}")))
+                    .debug_selector(|| "annotation-ai-body".into())
+                    .w_full()
+                    .min_w_0()
+                    .when_some(height, |d, height| {
+                        d.max_h(height)
+                            .overflow_y_scroll()
+                            .track_scroll(&scroll)
+                            .on_scroll_wheel(move |_, _, cx| {
+                                if wheel_scroll.max_offset().y > px(0.) {
+                                    cx.stop_propagation();
+                                }
+                            })
+                    })
+                    .child(
+                        div()
+                            .debug_selector(|| "annotation-ai-content".into())
+                            .w_full()
+                            .min_w_0()
+                            .child(
+                                self.rich_markdown(format!("reply-body-{id}"), &body, 240., cx)
+                                    .selectable(true)
+                                    .w_full()
+                                    .min_w_0()
+                                    .text_size(px(13.5))
+                                    .line_height(relative(1.72)),
+                            ),
+                    ),
             )
             .child(
                 Button::new(SharedString::from(format!("reply-copy-{id}")))
+                    .debug_selector(|| "annotation-ai-copy".into())
                     .ghost()
                     .xsmall()
-                    .label("复制")
+                    .label(if height.is_some() {
+                        "复制全文 · 回答内可滚动"
+                    } else {
+                        "复制全文"
+                    })
                     .on_click(move |_, _, cx| {
                         cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
                     }),
@@ -5641,6 +5735,10 @@ impl ReaderView {
             .child(
                 div()
                     .id(SharedString::from(format!("annotation-card-{id}")))
+                    .debug_selector({
+                        let id = id.clone();
+                        move || format!("annotation-card-{id}")
+                    })
                     // Reveal only on mouse movement, not when a saved card
                     // replaces the editor underneath a stationary pointer.
                     .on_mouse_move(cx.listener(move |this, _, _, cx| {
@@ -6108,38 +6206,9 @@ impl ReaderView {
                         )
                         .children(notes.iter().map(|note| {
                             if note["kind"] == "ai" {
-                                div()
-                                    .relative()
-                                    .border_l_2()
-                                    .border_color(rgb(0x387487))
-                                    .pl(px(12.))
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(6.))
-                                    .child(self.annotation_jump_bar(note, false, cx))
-                                    .child(
-                                        div()
-                                            .text_size(px(12.))
-                                            .text_color(rgb(0x387487))
-                                            .child("AI"),
-                                    )
-                                    .child(
-                                        TextView::markdown(
-                                            SharedString::from(format!(
-                                                "discussion-{}",
-                                                note["id"].as_str().unwrap_or("")
-                                            )),
-                                            note["body"].as_str().unwrap_or("").to_owned(),
-                                        )
-                                        .selectable(true),
-                                    )
-                                    .into_any_element()
+                                self.discussion_card(note, true, cx)
                             } else {
-                                if note["kind"] == "ai" {
-                                    self.discussion_card(note, true, cx)
-                                } else {
-                                    self.annotation_card(note, true, cx)
-                                }
+                                self.annotation_card(note, true, cx)
                             }
                         }))
                 }))

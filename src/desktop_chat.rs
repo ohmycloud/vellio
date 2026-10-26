@@ -750,7 +750,7 @@ impl ReaderView {
                         let error =
                             matches!(message["status"].as_str(), Some("error" | "cancelled"));
                         let style = AnswerStyle::from_value(&message["answer_style"]);
-                        let model = message["model"].as_str().unwrap_or("AI").to_owned();
+                        let model = ai::answer_model_label(message);
                         let copy = body.clone();
                         let copy_weak = weak.clone();
                         let pin_weak = weak.clone();

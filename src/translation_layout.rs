@@ -90,6 +90,8 @@ fn role(node: Node<'_, '_>) -> &'static str {
         "heading"
     } else if is_display_equation(node) {
         "equation"
+    } else if node.attribute("data-vellio-footnote") == Some("true") {
+        "footnote"
     } else if node
         .attribute("style")
         .is_some_and(|s| s.replace(' ', "").contains("text-align:center"))
@@ -645,6 +647,31 @@ mod tests {
         );
         assert!(saved_html(&block, "用户修改").is_none());
     }
+    #[test]
+    fn footnotes_keep_their_role_and_metadata_when_translated() {
+        let plan = Plan::from_html(
+            "<p>Body.</p><p data-vellio-footnote=\"true\"><sup>4</sup>A footnote.</p>",
+        )
+        .unwrap();
+        let roles = plan.roles();
+        assert_eq!(roles[0]["kind"], "paragraph");
+        assert_eq!(roles[1]["kind"], "footnote");
+        let translated = plan
+            .translate(
+                &plan
+                    .input()
+                    .replace("Body.", "正文。")
+                    .replace("A footnote.", "脚注。"),
+            )
+            .unwrap();
+        assert!(
+            translated
+                .html
+                .contains("data-vellio-footnote=\"true\"><sup>4</sup>脚注。")
+        );
+        assert!(translated.markdown.contains("脚注。"));
+    }
+
     #[test]
     fn display_equations_are_retained_without_requesting_a_translation_unit() {
         let source = source();

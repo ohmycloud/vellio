@@ -343,6 +343,146 @@ fn drawer_notes_and_questions_render_quote_and_body_math(cx: &mut TestAppContext
     check_annotation_math(cx, true);
 }
 
+fn check_annotation_code_highlighting(cx: &mut TestAppContext, drawer: bool) {
+    cx.update(gpui_kit::init);
+    for (language, source) in [
+        ("python", "# 注释\ndef multiply(a, b):\n    return a * b\n"),
+        ("js", "function hello() { return \"中文\"; }\n"),
+        ("rust", "fn main() { let count = 42; }\n"),
+        ("json", "{\"name\": \"中文\", \"count\": 42}\n"),
+        ("", "# Register tool\ntools = Tools()\ntools.add_tool(\n    name=\"multiply\",\n    func=multiply,\n    description=\"两个数相乘\"\n)\n"),
+    ] {
+        let mut raw = fixture();
+        let body = format!("代码示例：\n\n```{language}\n{source}```\n\n保留正文与 `inline_code`。");
+        raw["reader"]["notes"]["note"]["body"] = json!(body);
+        let saved_note = raw["reader"]["notes"]["note"].clone();
+        let mut reader = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let view = cx.new(|cx| {
+                let mut reader = ReaderView::new(raw, None, None, window, cx);
+                reader.panel = Panel::Notes;
+                reader.panel_open = drawer;
+                reader
+            });
+            reader = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        let reader = reader.unwrap();
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = observed.clone();
+        cx.update(|_, cx| {
+            // Simulate defaults being replaced by a theme change. The note's
+            // rich-text entry point must restore highlighting on its own.
+            cx.set_global(gpui_kit::base::TextViewDefaults::new());
+            reader.update(cx, |reader, cx| {
+                let _ = reader.rich_markdown("note-code-probe".into(), &body, 240., cx);
+            });
+            assert!(gpui_kit::base::TextViewDefaults::global(cx).has_code_block_highlighter());
+            let defaults = gpui_kit::base::TextViewDefaults::global(cx)
+                .clone()
+                .with_code_block_highlighter(move |block| {
+                    let runs = super::code::highlight(block);
+                    let multicolor = runs.first().is_some_and(|first| {
+                        runs.iter().any(|(_, style)| style.color != first.1.color)
+                    });
+                    captured.lock().unwrap().push((
+                        block.lang().map(|lang| lang.to_string()),
+                        block.code().to_string(),
+                        multicolor,
+                    ));
+                    runs
+                });
+            cx.set_global(defaults);
+        });
+        settle(cx);
+        assert!(cx.debug_bounds("annotation-card-body").is_some());
+        assert!(
+            observed.lock().unwrap().iter().any(|(lang, code, colored)| {
+                lang.as_deref() == (!language.is_empty()).then_some(language)
+                    && code == source
+                    && *colored
+            }),
+            "saved note code must reach the native multicolor highlighter: {language:?}"
+        );
+        reader.read_with(cx, |reader, _| {
+            assert_eq!(reader.raw["reader"]["notes"]["note"], saved_note);
+        });
+    }
+}
+
+#[gpui_kit::test]
+fn margin_note_code_blocks_have_syntax_highlighting(cx: &mut TestAppContext) {
+    check_annotation_code_highlighting(cx, false);
+}
+
+#[gpui_kit::test]
+fn drawer_note_code_blocks_have_syntax_highlighting(cx: &mut TestAppContext) {
+    check_annotation_code_highlighting(cx, true);
+}
+
+fn check_note_code_horizontal_scroll(cx: &mut TestAppContext, drawer: bool) {
+    cx.update(gpui_kit::init);
+    let mut raw = fixture();
+    raw["reader"]["notes"]["note"]["body"] = json!("```python\nprint(\"short\")\n```\n");
+    let mut reader = None;
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut reader = ReaderView::new(raw, None, None, window, cx);
+            reader.panel = Panel::Notes;
+            reader.panel_open = drawer;
+            reader
+        });
+        reader = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    let reader = reader.unwrap();
+    settle(cx);
+    let short_height = cx.debug_bounds("text-code-viewport").unwrap().size.height;
+    let long_body = format!("```python\nprint(\"{}\")\n```\n", "long 中文 code ".repeat(80));
+    reader.update(cx, |reader, cx| {
+        reader.raw["reader"]["notes"]["note"]["body"] = json!(long_body);
+        reader.state = easyread_gpui::model::ReaderState::from_value(reader.raw.clone()).unwrap();
+        reader.reset_rows();
+        cx.notify();
+    });
+    settle(cx);
+    let viewport = cx.debug_bounds("text-code-viewport").unwrap();
+    let content = cx.debug_bounds("text-code-content").unwrap();
+    let body = cx.debug_bounds("annotation-card-body").unwrap();
+    assert!((viewport.size.height - short_height).abs() < px(1.), "long source lines must not wrap");
+    assert!(viewport.size.width <= body.size.width);
+    assert!(content.size.width > viewport.size.width * 2.);
+    cx.update(|window, cx| {
+        let old_background: gpui_kit::Background = gpui_kit::base::TextViewDefaults::global(cx)
+            .style().cloned().unwrap_or_default().code_background().into();
+        assert!(!window.painted_quads().iter().any(|quad| quad.background == old_background),
+            "note code must not paint the theme's contrasting code background");
+    });
+    cx.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: viewport.center(),
+        delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(-120.), px(0.))),
+        ..Default::default()
+    });
+    settle(cx);
+    let scrolled = cx.debug_bounds("text-code-content").unwrap();
+    assert!(scrolled.left() < content.left() - px(50.), "horizontal gestures must reveal the clipped code");
+    assert_eq!(cx.debug_bounds("text-code-viewport").unwrap(), viewport);
+    assert_eq!(scrolled.size.height, content.size.height);
+    reader.read_with(cx, |reader, _| {
+        assert_eq!(reader.raw["reader"]["notes"]["note"]["body"], long_body);
+    });
+}
+
+#[gpui_kit::test]
+fn margin_note_code_uses_transparent_background_and_invisible_horizontal_scroll(cx: &mut TestAppContext) {
+    check_note_code_horizontal_scroll(cx, false);
+}
+
+#[gpui_kit::test]
+fn drawer_note_code_uses_transparent_background_and_invisible_horizontal_scroll(cx: &mut TestAppContext) {
+    check_note_code_horizontal_scroll(cx, true);
+}
+
 #[gpui_kit::test]
 fn chat_references_are_deduplicated_removable_and_do_not_pollute_the_draft(
     cx: &mut TestAppContext,

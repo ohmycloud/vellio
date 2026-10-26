@@ -5,8 +5,15 @@ use pdfium_render::prelude::*;
 
 #[path = "pdf_definition.rs"]
 mod definition;
+#[path = "pdf_footnote.rs"]
+mod footnote;
 #[path = "pdf_list.rs"]
 mod list;
+#[path = "pdf_toc.rs"]
+mod toc;
+#[cfg(test)]
+#[path = "pdf_prose_tests.rs"]
+mod prose_tests;
 #[path = "pdf_math.rs"]
 mod math;
 #[path = "pdf_table.rs"]
@@ -35,10 +42,39 @@ fn escape(text: &str) -> String {
         .replace('>', "&gt;")
 }
 
+/// PDFium can expose a non-BMP mathematical letter as two UTF-16 records.
+/// Keep one scalar at the leading record's geometry, never drop both halves.
+fn decoded_characters(text: &PdfPageText<'_>) -> Vec<(PdfPageTextCharIndex, char)> {
+    let chars = text.chars();
+    let mut iter = chars.iter().peekable();
+    let mut decoded = Vec::new();
+    while let Some(g) = iter.next() {
+        let value = g.unicode_value();
+        let ch = if (0xD800..=0xDBFF).contains(&value) {
+            let scalar = iter.peek().and_then(|next| {
+                let low = next.unicode_value();
+                (0xDC00..=0xDFFF).contains(&low)
+                    .then(|| char::from_u32(0x10000 + ((value - 0xD800) << 10) + low - 0xDC00))
+                    .flatten()
+            });
+            if scalar.is_some() {
+                iter.next();
+            }
+            scalar
+        } else {
+            char::from_u32(value)
+        };
+        if let Some(ch) = ch {
+            decoded.push((g.index(), ch));
+        }
+    }
+    decoded
+}
+
 fn glyphs(text: &PdfPageText<'_>) -> Vec<Glyph> {
     let mut glyphs = Vec::new();
-    for ch in text.chars().iter() {
-        let Some(c) = ch.unicode_char() else { continue };
+    for (index, c) in decoded_characters(text) {
+        let Ok(ch) = text.chars().get(index) else { continue };
         let font = ch.font_name().to_ascii_lowercase();
         let mono = ch.font_is_fixed_pitch()
             || [
@@ -454,21 +490,18 @@ pub(crate) fn reading_html(
     page_number: usize,
 ) -> anyhow::Result<ReadingHtml> {
     let text = page.text()?;
-    let mut glyphs = glyphs(&text);
-    let source: String = glyphs
-        .iter()
-        .map(|g| g.ch)
+    // Extraction compatibility is deliberately unchanged for existing books.
+    // Repaired mathematical scalars belong only to the disposable presentation.
+    let source = text.chars().iter().filter_map(|g| g.unicode_char())
         .collect::<String>()
         .replace("\r\n", "\n");
+    let mut glyphs = glyphs(&text);
     let hidden = crate::pdf::hidden_text_indices(page, &text);
     if !hidden.is_empty() {
-        // glyphs() skips characters without Unicode; retain the same index
-        // mapping while leaving PDFium's generated line breaks intact.
-        let indices = text
-            .chars()
-            .iter()
-            .filter(|ch| ch.unicode_char().is_some())
-            .map(|ch| ch.index())
+        // Use the same decoded scalars and leading-record indices as glyphs(),
+        // while leaving PDFium's generated line breaks intact.
+        let indices = decoded_characters(&text).into_iter()
+            .map(|(index, _)| index)
             .collect::<Vec<_>>();
         glyphs = glyphs
             .into_iter()
@@ -671,6 +704,13 @@ pub(crate) fn reading_html(
             ),
         ));
         omitted.extend(expression.lines.iter().copied());
+    }
+    for (lines, html) in footnote::recover(page, &glyphs, &omitted) {
+        // Do not consume a recovered table, formula or figure insertion.
+        if !insertions.iter().any(|(i, _)| lines.contains(i)) {
+            insertions.push((lines[0], html));
+            omitted.extend(lines);
+        }
     }
     for list in list::recover(page, &glyphs, &omitted) {
         insertions.push((list.lines[0], list.html));
@@ -961,15 +1001,15 @@ pub(crate) fn destination_quote(page: &PdfPage<'_>, y: Option<f32>) -> anyhow::R
     Ok(line.map(line_text).unwrap_or_default().trim().into())
 }
 
-fn apply_links(glyphs: &[Glyph], mut html: String) -> String {
+fn apply_links(glyphs: &[Glyph], eligible: &[bool], mut html: String) -> String {
     let mut i = 0;
     while i < glyphs.len() {
-        let Some(url) = &glyphs[i].link else {
+        let Some(url) = glyphs[i].link.as_ref().filter(|_| eligible[i]) else {
             i += 1;
             continue;
         };
         let start = i;
-        while i < glyphs.len() && glyphs[i].link.as_ref() == Some(url) && !glyphs[i].ch.is_control()
+        while i < glyphs.len() && eligible[i] && glyphs[i].link.as_ref() == Some(url) && !glyphs[i].ch.is_control()
         {
             i += 1;
         }
@@ -1059,6 +1099,68 @@ fn normalized_title(text: &str) -> String {
         .join(" ")
 }
 
+/// Parallel explanatory label columns immediately below a vector diagram
+/// belong to that diagram, not to the surrounding body flow. Require two
+/// aligned multi-line columns; never grow a crop by walking through prose or
+/// a lone bold section title.
+pub(crate) fn diagram_callout_bounds(page: &PdfPage<'_>, bounds: [f32; 4]) -> Option<[f32; 4]> {
+    diagram_callouts(&glyphs(&page.text().ok()?), bounds, page.width().value)
+}
+
+fn diagram_callouts(gs: &[Glyph], bounds: [f32; 4], page_width: f32) -> Option<[f32; 4]> {
+    let rows: Vec<_> = gs.split(|g| g.ch == '\n').filter_map(|line| {
+        let visible: Vec<_> = line.iter().filter(|g| !g.ch.is_whitespace() && !g.ch.is_control()).collect();
+        let first = *visible.first()?;
+        if visible.len() < 12 || first.size <= 0. || visible.iter().any(|g| {
+            !g.bold || g.italic || g.mono || (g.size - first.size).abs() > first.size * 0.05
+                || (g.y - first.y).abs() > first.size * 0.1
+        }) {
+            return None;
+        }
+        let right = visible.iter().map(|g| g.right).fold(first.x, f32::max);
+        (right - first.x <= page_width * 0.48).then_some((first, right))
+    }).collect();
+    let seeds: Vec<_> = rows.iter().filter(|(g, right)| {
+        bounds[1] - g.y >= 0.
+            && bounds[1] - g.y <= g.size * 1.8
+            && g.x < bounds[2] && *right > bounds[0]
+    }).collect();
+    let mut columns = Vec::new();
+    for (first, first_right) in seeds {
+        if columns.iter().any(|b: &[f32; 4]| (b[0] - first.x).abs() <= first.size) {
+            continue;
+        }
+        let mut bottom = first.y;
+        let mut right = *first_right;
+        let mut count = 1;
+        loop {
+            let next = rows.iter().filter(|(g, _)| {
+                (g.x - first.x).abs() <= first.size * 0.5
+                    && (g.size - first.size).abs() <= first.size * 0.05
+                    && bottom - g.y >= first.size * 0.8
+                    && bottom - g.y <= first.size * 1.6
+                    && first.y - g.y <= first.size * 6.
+            }).max_by(|(a, _), (b, _)| a.y.total_cmp(&b.y));
+            let Some((g, edge)) = next else { break };
+            bottom = g.y;
+            right = right.max(*edge);
+            count += 1;
+        }
+        if count >= 2 {
+            columns.push([first.x, bottom - first.size * 0.3, right, first.y + first.size]);
+        }
+    }
+    columns.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    if columns.len() < 2 || columns.windows(2).any(|p| p[0][2] >= p[1][0]) {
+        return None;
+    }
+    let mut expanded = bounds;
+    for b in columns {
+        expanded = [expanded[0].min(b[0]), expanded[1].min(b[1]), expanded[2].max(b[2]), expanded[3].max(b[3])];
+    }
+    (expanded[2] - expanded[0] <= page_width * 0.85).then_some(expanded)
+}
+
 /// Only whole physical lines on a bookmark's destination page are eligible.
 /// Wrapped titles must keep the same typography; references inside sentences,
 /// index entries and similarly worded headings on other pages remain prose.
@@ -1073,7 +1175,7 @@ fn bookmarked_heading(
         let visible: Vec<_> = line.iter().filter(|g| !g.ch.is_whitespace()).collect();
         if visible.is_empty()
             || visible.iter().any(|g| {
-                g.mono || (g.size - first.size).abs() > first.size * 0.05 || g.bold != first.bold
+                g.mono || !heading_size_matches(first, g) || g.bold != first.bold
             })
         {
             break;
@@ -1098,6 +1200,17 @@ fn bookmarked_heading(
     None
 }
 
+/// Small-cap fonts encode lowercase letters at about 80% of the initial
+/// capital's size. They still form a single title on the same baseline, not a
+/// mixed-size body line or a title with a raised reference.
+fn heading_size_matches(first: &Glyph, glyph: &Glyph) -> bool {
+    (glyph.size - first.size).abs() <= first.size * 0.05
+        || (glyph.ch.is_lowercase()
+            && glyph.size >= first.size * 0.75
+            && glyph.size <= first.size * 0.85
+            && (glyph.y - first.y).abs() <= first.size * 0.1)
+}
+
 /// Recover unbookmarked section titles only with a complete, distinctly bold
 /// physical line followed by ordinary body text or an aligned, smaller bold
 /// subheading. Inline emphasis stays prose.
@@ -1112,7 +1225,7 @@ fn typographic_heading(lines: &[&[Glyph]], start: usize) -> Option<(usize, usize
         if visible.is_empty()
             || visible
                 .iter()
-                .any(|g| !g.bold || g.mono || (g.size - first.size).abs() > first.size * 0.05)
+                .any(|g| !g.bold || g.mono || !heading_size_matches(first, g))
         {
             break;
         }
@@ -1670,6 +1783,7 @@ fn render_region(
 ) -> Option<String> {
     let lines: Vec<_> = glyphs.split(|g| g.ch == '\n').collect();
     let paragraphs = paragraph_breaks(&lines, omitted);
+    let contents = toc::recover(&lines, omitted);
     let mut scripts = superscripts(glyphs);
     let mut offset = 0;
     for (i, line) in lines.iter().enumerate() {
@@ -1690,6 +1804,7 @@ fn render_region(
         .collect();
     if !force
         && figures.is_empty()
+        && contents.iter().all(Option::is_none)
         && !paragraphs.iter().any(|boundary| *boundary)
         && !scripts.iter().any(|script| *script)
         && !(0..lines.len()).any(|i| reading_heading(&lines, i, headings).is_some())
@@ -1713,6 +1828,7 @@ fn render_region(
     }
     let mut html = String::new();
     let mut typography = vec![false; glyphs.len()];
+    let mut link_eligible = vec![true; glyphs.len()];
     let mut line_offsets = vec![];
     let mut cursor = 0;
     for line in &lines {
@@ -1764,6 +1880,15 @@ fn render_region(
             html.push_str(image);
         }
         if omitted.contains(&i) {
+            i += 1;
+            continue;
+        }
+        if let Some(entry) = &contents[i] {
+            flush_prose(&mut html, &mut prose);
+            html.push_str(entry);
+            // These compact rows already carry their original PDF links.
+            // Do not wrap them a second time using unshortened source quotes.
+            link_eligible[line_offsets[i]..line_offsets[i] + lines[i].len()].fill(false);
             i += 1;
             continue;
         }
@@ -1975,6 +2100,7 @@ fn render_region(
         &scripts,
         apply_links(
             glyphs,
+            &link_eligible,
             apply_prose_images(glyphs, apply_typography(glyphs, &typography, html)),
         ),
     ))
@@ -3650,7 +3776,7 @@ mod tests {
         }
     }
 
-    fn test_lines(lines: &[(&str, f32, bool, bool)]) -> Vec<Glyph> {
+    pub(super) fn test_lines(lines: &[(&str, f32, bool, bool)]) -> Vec<Glyph> {
         lines
             .iter()
             .enumerate()
