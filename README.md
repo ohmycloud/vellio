@@ -1,6 +1,6 @@
 # Vellio Rust / GPUI
 
-阅读器现名为 **Vellio**（原 EasyRead Rust / GPUI）。为兼容现有安装，Rust crate / 开发二进制名 `easyread-gpui`、`EASYREAD_*` 环境变量、默认书库与设置路径及内部数据标识保持不变；已有书籍、批注和阅读进度无需迁移。
+阅读器现名为 **Vellio**（原 EasyRead Rust / GPUI），面向 **PDF / EPUB 书籍、技术书与论文**，并非仅限学术文献。为兼容现有安装，Rust crate / 开发二进制名 `easyread-gpui`、`EASYREAD_*` 环境变量、默认书库与设置路径及内部数据标识保持不变；已有书籍、批注和阅读进度无需迁移。
 
 迁移已进入实现阶段：原生 GPUI 界面直接调用 Rust 文献库、PDF、批注、公式和 AI 服务，不依赖 Python HTTP 后端或 Electron。当前为可运行的第一个迁移增量，完整功能对齐尚在进行。
 
@@ -30,6 +30,8 @@ cargo run --locked --features desktop
 
 PDF 阅读正文及英文对照会隐藏页末 `Licensed to 姓名 <邮箱>` 授权标记，并恢复文字编码的无序列表标记（包括 `¡` 加制表符）以及邻接正文的圆形／方形矢量标记。列表依据字符坐标恢复条目、续行和嵌套缩进，随后正文保持独立段落。独立的短编号小节标题保留标题层级和段落边界，后续正文从新段落开始。处理仅发生在显示层，已导入书籍无需重新导入；原始 PDF、提取文本、用户修订及其版本哈希保留。原页视图仍显示原 PDF。验收见 [PDF 页脚与列表修复](evidence/pdf-reading-cleanup.md) 与 [矢量列表修复](evidence/pdf-vector-lists.md)。
 
+Web 对有可靠几何证据的 PDF 脚注默认折叠；桌面端已撤回脚注折叠，恢复原有正文内直接显示，不再隐藏脚注或提供「本页脚注」开关。桌面长页边笔记／AI 回复仍在该页旁独立滚动，不把正文行撑高、在下一源页之前留下大片空白；编辑笔记期间保留原有放置方式。此改动保留源页块、批注和修订锚点，不自动合并跨页段落，也不重写已有译文。验收与边界见 [PDF 连续阅读与脚注](evidence/pdf-continuous-reading.md)。
+
 阅读界面不再常驻左边栏：顶部依次显示青色书籍 App 图标、目录图标、书名和当前章节，右侧依次显示 原文 / 译文 / 双语（带顺序菜单）、Page / Notes / Ask AI / Aa；前三项分别配文件、对话气泡和放射星形图标，选中时图标与文字同步为青色，按钮使用淡青色圆角背景。目录按钮打开可滚动浮框，章、节、小节按层级缩进，编号以灰色显示并与标题保持统一间距，选择章节跳转并收起；浮框外点击、再次点击目录按钮或 Esc 关闭。章节优先使用已有结构化标题；页级 PDF 使用原文件的本地书签，没有标题/书签时按页导航。PDF 书签目前定位到对应正文页块，同页多个小节尚未精确定位到字符。点击 App 图标打开文献库菜单，保留切书、正文搜索、导入、迁入、补全图片和翻译入口。窗口标题同步书名。正文和页边笔记作为一组，将剩余横向空间按左侧两份、右侧一份分配，使左侧留白更宽；打开侧栏时按可用宽度调整。验收见 [顶部导航记录](evidence/reader-navigation.md)。
 
 页边笔记保存并关闭编辑区后，仍以暖色竖线卡片显示在引文右侧，包含类型、创建时间、引文和笔记正文；Note 显示 Ask AI for feedback，Question 显示 Ask AI to answer，并支持 Note / Question 双向切换和 Answered / Unanswered 标记；随正文滚动，同一 PDF 文本块内的多条笔记按原生文字位置排列并避让。旧 `highlight` / `underline` 记录只要有笔记正文也按个人笔记显示。顶部 Notes 打开全书批注抽屉：Annotations / Paper notes、All / My note / Highlights / AI / Unanswered 筛选、页码和章节分组、Edit / Make it a question / Delete；Ask AI 按 EasyRead 的 220ms 缓动曲线从右向左滑入。宽屏下右栏宽度为窗口的 44%（最大 720px），正文同步让位，形成独立滚动的两列；可拖动分隔线调整宽度、双击恢复，窄屏采用右侧覆盖面板。笔记卡的反馈 / 回答按钮直接发起请求，流式显示回答，并将成功回答保存为该笔记的回复；Question 随之标为 Answered，已回答的问题再次点击则打开追问，不重复发送。模型配置失败时保留草稿与引用以便重试。对话顶部支持新建、切换、改名和确认删除，底部固定引用标签、模型 / 回答方式选择和发送 / 停止按钮；模型菜单以两行显示名称与来源、默认模型说明和当前勾选，并支持仅当前对话生效的思考强度选择与恢复默认，强度会随对话保存，不修改全局配置。回答方式菜单显示标准回答 / 简明回答 / 精读的标题与详细说明、当前勾选及额外正文上下文的用量提示，长说明自动换行。Enter 发送、Shift+Enter 换行。选区 Ask AI 把引用加入可移除、去重的标签，而不是粘入输入文本；无手动引用时使用当前阅读段落。标准回答只带附近段落和明确引用，只有问到笔记 / 标记时才带相关标记，精读 / 简明模式附正文节选。回答可复制或放到页边；删除对话不删除已有页边讨论。详见 [Ask AI 对齐验收](evidence/ask-ai-panel.md)。Ask AI 回答和页边 AI 回复共用正文的数学公式渲染，支持 `$…$`、`$$…$$`、`\(…\)`、`\[…\]`；独立公式另起一段并适配列宽，代码中的公式示例保持原样，历史回答无需重问。桌面端在后台编译原生矢量公式，流式回答等待分隔符闭合；不修改已保存的回答文本。详见 [AI 公式修复](evidence/ask-ai-math.md)。Notes 列表中卡片左侧的长竖线及高亮引文左侧的短竖线均可点击，正文平滑滚动至对应段落/引文，鼠标停留在竖线时目标正文块显示 `#ECECE6` 圆角背景；悬停笔记正文则只为对应原文段落显示 `#ECECE6` 背景，侧栏保持打开。离开长、短竖线或收起 Notes 后立即恢复原背景，不保留点击目标底色；悬停不改变阅读位置；手动滚动正文可中止跳转动画。页级 PDF 尚未语义分段，因此背景标示整个对应页文本块。引文无法匹配时定位段落开头，原文引文可自动显示英文对照。旧引文粘贴表单和黄色笔记卡已移除；阅读时默认关闭抽屉。验收见 [选区与笔记记录](evidence/selection-toolbar.md)。
@@ -40,7 +42,7 @@ macOS ARM64 的 PDFium 动态库已随本地工程提供。PDF 引擎为 C++ PDF
 
 PDF 插图及图片整页的外部白底在显示时适配阅读器底色，保留图内文字和封闭彩色区域。点击图片打开大图预览，可放大、缩小、恢复适合窗口及滚动查看，按 Esc 返回原阅读位置。已有书籍无需重新导入。对于源 PDF 将独立位图非等比例放置的情况，阅读视图按内嵌图片的原始比例显示，点击放大共用修复后的图片；含叠加文字、组合对象、裁剪、旋转或镜像的图仍保留原页几何，避免丢失内容。旧显示缓存自动重建，不改写书库数据。共用同一 Figure 图注的并排子图现在作为整体保留源位置、间距、相对大小和图内标题，不再各自放大并上下排列；普通字体的编号图注也保持独立居中段落，旧导入无需重做。独立图注或没有图注的图片不据此合并。验收见 [图片底色与放大](evidence/pdf-image-preview.md)、[位图比例修复](evidence/pdf-bitmap-ratio.md) 和 [并排子图修复](evidence/pdf-shared-figure-panels.md)。
 
-PDF 中有数学字体与几何证据的公式会恢复为 TeX，再交给 Typst 原生矢量排版，覆盖独立公式以及正文中的变量、上下标、根号、分式和求和上下限。公式裁图和图片预览路径已撤掉；v13 排版缓存自动重建，无需重新导入，也不改写原始 PDF、书库文本或批注记录。PDF→TeX 仍是保守的结构恢复，不是通用 OCR：复杂矩阵、多行对齐、扫描公式和字符顺序交错的区域暂不保证自动恢复，无法确认的内容保留既有文本呈现。有明确 TeX 的矩阵、分段式与多行公式可由同一 Typst 原生渲染器排版。拆分字体的小数、科学计数和数字比值保持完整数学对象；紧接较小子标题的章节标题也保持独立段落。重复变量在页码等上下文被移除后仍按保留下来的上下文定位，避免整页行内公式恢复被撤销；旧译文的 `1/ √ dk` 也可按原文证据恢复为完整分式。详见 [PDF 行内 / 独立公式修复](evidence/pdf-display-equations.md)、[行内分式恢复修复](evidence/pdf-inline-fraction-recovery.md) 和 [小数与相邻标题修复](evidence/pdf-inline-decimals-and-headings.md)。
+PDF 中有数学字体与几何证据的公式会恢复为 TeX，再交给 Typst 原生矢量排版，覆盖独立公式以及正文中的变量、上下标、根号、分式和求和上下限。公式裁图和图片预览路径已撤掉；v17 排版缓存自动重建，无需重新导入，也不改写原始 PDF、书库文本或批注记录。PDF→TeX 仍是保守的结构恢复，不是通用 OCR：复杂矩阵、多行对齐、扫描公式和字符顺序交错的区域暂不保证自动恢复，无法确认的内容保留既有文本呈现。有明确 TeX 的矩阵、分段式与多行公式可由同一 Typst 原生渲染器排版。拆分字体的小数、科学计数和数字比值保持完整数学对象；紧接较小子标题的章节标题也保持独立段落。重复变量在页码等上下文被移除后仍按保留下来的上下文定位，避免整页行内公式恢复被撤销；旧译文的 `1/ √ dk` 也可按原文证据恢复为完整分式。详见 [PDF 行内 / 独立公式修复](evidence/pdf-display-equations.md)、[行内分式恢复修复](evidence/pdf-inline-fraction-recovery.md) 和 [小数与相邻标题修复](evidence/pdf-inline-decimals-and-headings.md)。
 
 设置齿轮打开六标签设置面板：Model、Reading、Sidebar、Cloud library、Keyboard shortcuts 和 About / Updates。支持 API 环境密钥引用、Claude Code / Codex CLI 本机登录；可分别指定翻译和 Ask AI 默认模型，并配置页批次和并行度。阅读偏好与功能开关、可编辑快捷键可保存或取消，侧栏文件夹显示/置顶即时生效。云书库操作复制完整书库到选定同步目录下的 `Vellio/library` 并保留原目录，成功后恢复该位置。详情与测试边界见 [设置面板验收](evidence/settings.md)。
 
@@ -107,6 +109,30 @@ cargo run --locked -- --library ./my-library --paper PAPER_ID --translate-pages 
 项目仓库为 <https://github.com/ohmycloud/vellio>。桌面 Settings → **About / Updates**、设置底栏及首页问号菜单均可进入更新页；Web 设置也有对应入口。支持手动检查和可关闭的每日自动检查，显示当前版本、新版说明与匹配系统/CPU 的下载按钮；离线、GitHub 限流、暂无 Release 会分别处理。更新检查不上传书籍、笔记或模型配置。
 
 当前采用 **检查 → 浏览器下载 → 退出后替换程序**，不静默覆盖运行中的应用，也不修改书库。已补充 macOS Intel / Apple Silicon、Windows x64、Linux x64 的原生打包 workflow；macOS 参考 EasyRead 使用独立临时钥匙串签名，可配置 Developer ID 公证；Windows 支持可选 Authenticode 签名。发布流程先生成草稿 Release，需各平台实际验收后人工发布，并非已发布的现成安装包。版本/包名约定、所需 GitHub Secrets、签名限制及测试范围见 [软件更新与发行](docs/updates-and-releases.md)。Web 服务自身仍需更新源码并重新编译，不会被桌面安装包替换。
+
+### 安装包体积优化
+
+发布构建参考 [Zed PR #65168](https://github.com/zed-industries/zed/pull/65168)：通过独立的 `.cargo/bundle-config.toml` 对应用自身使用 `opt-level = "z"` 和单个 codegen unit，Typst、PDF／图像处理、GPUI 等依赖仍使用 `opt-level = 3`。macOS 仅在最终可执行文件链接时隐藏 Rust v0 导出符号，保留 Objective-C／C 导出；所有优化均发生在签名和公证之前。不删字体、PDFium、公式引擎或许可证，也不改动书库。macOS 打包时额外用 `strip -x` 去除可执行文件的本地符号表，保留外部符号；诊断包可通过 `package_release.py --keep-symbols` 保留本地符号名。
+
+本机 macOS ARM64、Rust 1.99.1、相同源码实测（MiB；基线为普通 release，不是 debug）：
+
+| 项目 | 普通 release | 优化发布包 | 缩减 |
+| --- | ---: | ---: | ---: |
+| 可执行文件 | 140.31 | 116.69 | 16.83% |
+| 展开的 `.app` | 147.37 | 123.75 | 16.03% |
+| 压缩 DMG | 73.52 | 68.45 | 6.90% |
+
+仅采用 Zed 的构建／链接调整时，可执行文件为 136.06 MiB；其余收益来自签名前去除本地符号表。版本校验、中文公式导出、PDF／EPUB 导入、原生窗口启动及临时签名检查通过；这不是完整性能基准或发行签名／公证验收。
+
+```sh
+# 与发行 workflow 共用；其他平台传入相应 target。
+VELLIO_VERSION=0.1.0 python3 scripts/build_release.py --target aarch64-apple-darwin --jobs 2
+python3 scripts/package_release.py --target aarch64-apple-darwin --version 0.1.0 --pdfium-dir assets/pdfium
+# 仅生成本机临时签名 .app：
+sh scripts/package_macos.sh --release
+```
+
+普通 `cargo build`、`cargo build --release` 和不带参数的 `package_macos.sh` 保持原有行为；要获得此处的减包效果，请使用上述发布入口。Linux／Windows 不传入 macOS 链接器参数，实际体积和启动仍须在对应平台验收。
 
 ## 验证与本地 app
 

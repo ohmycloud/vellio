@@ -1,0 +1,14 @@
+# Packaging only: cargo --config .cargo/bundle-config.toml ...
+# Based on https://github.com/zed-industries/zed/pull/65168
+# Keep normal development builds and plain cargo build --release unchanged.
+[profile.release]
+opt-level = 3
+strip = "debuginfo"
+
+# Unlike Zed's multi-crate workspace, this app has one application crate.
+# Override just that package rather than forcing every build dependency and
+# proc macro to opt-level=3 with "*". Runtime dependencies (Typst, PDF/images,
+# syntax highlighting and GPUI) retain release's speed optimization.
+[profile.release.package.easyread-gpui]
+opt-level = "z"
+codegen-units = 1

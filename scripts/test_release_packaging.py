@@ -85,18 +85,48 @@ class PackagingTests(unittest.TestCase):
     def test_mac_bundle_version_identifier_and_signing_requirement(self):
         target = "aarch64-apple-darwin"
         self.build(target)
+        stripped = []
         def sign(app, required):
             self.assertTrue(required)
+            self.assertEqual(stripped, [app / "Contents/MacOS/Vellio"])
+            self.assertEqual((app / "Contents/MacOS/libpdfium.dylib").read_bytes(), b"engine fixture")
             info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
             self.assertEqual(info["CFBundleShortVersionString"], "1.2.3")
             self.assertEqual(info["CFBundleIdentifier"], "org.easyread.gpui")
             self.assertTrue((app / "Contents/MacOS/libpdfium.dylib").is_file())
         def command(*args):
+            if args[0] == "xcrun":
+                self.assertEqual(args[1:3], ("strip", "-x"))
+                stripped.append(args[3])
+                return
             self.assertEqual(args[0], "hdiutil")
+            self.assertEqual(len(stripped), 1)
             Path(args[-1]).write_bytes(b"dmg fixture")
         with patch.object(release, "sign_app", sign), patch.object(release, "run", command):
             archive = release.package(target, "1.2.3", self.engine, self.out, True)
         self.assertEqual(archive.name, "Vellio-1.2.3-macos-aarch64.dmg")
+
+    def test_mac_diagnostic_package_can_keep_local_symbol_names(self):
+        target = "aarch64-apple-darwin"
+        self.build(target)
+        def command(*args):
+            self.assertEqual(args[0], "hdiutil", "Diagnostic packages must not invoke strip")
+            Path(args[-1]).write_bytes(b"dmg fixture")
+        with patch.object(release, "sign_app") as sign, patch.object(release, "run", command):
+            archive = release.package(target, "1.2.3", self.engine, self.out, keep_symbols=True)
+        sign.assert_called_once()
+        self.assertTrue(archive.is_file())
+
+    def test_mac_strip_failure_never_signs_or_modifies_the_build_output(self):
+        target = "aarch64-apple-darwin"
+        self.build(target)
+        binary = self.root / "target" / target / "release/easyread-gpui"
+        with patch.object(release, "sign_app") as sign, patch.object(
+                release, "run", side_effect=RuntimeError("strip failed")):
+            with self.assertRaises(RuntimeError):
+                release.package(target, "1.2.3", self.engine, self.out)
+        sign.assert_not_called()
+        self.assertEqual(binary.read_bytes(), b"executable fixture")
 
     def test_missing_engine_invalid_version_and_unsigned_mac_release_fail_closed(self):
         with self.assertRaises(RuntimeError):

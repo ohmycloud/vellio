@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """Build native release archives (Python is a build tool, not an app dependency).
 
-First build with VELLIO_VERSION set to --version, and install a matching PDFium
-wheel with: pip install --no-deps --target target/pdfium-wheel pypdfium2==5.13.0
+First build with VELLIO_VERSION set to --version:
+  VELLIO_VERSION=0.1.0 python scripts/build_release.py --target aarch64-apple-darwin
+Install a matching PDFium wheel:
+  pip install --no-deps --target target/pdfium-wheel pypdfium2==5.13.0
 Then: python scripts/package_release.py --target aarch64-apple-darwin --version 0.1.0
+macOS packaging removes local symbols before signing (use --keep-symbols to
+retain names for diagnostics). Fonts, PDFium and runtime exports are preserved.
 """
 import argparse
 import base64
@@ -70,7 +74,7 @@ def sign_windows(executable):
         run(signtool, "verify", "/pa", executable)
 
 
-def package(target, version, pdfium_dir, out, require_signing=False):
+def package(target, version, pdfium_dir, out, require_signing=False, keep_symbols=False):
     if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?", version):
         raise ValueError("Version must be a semantic version without the v prefix")
     os_name, arch, engine_name = TARGETS[target]
@@ -98,6 +102,11 @@ def package(target, version, pdfium_dir, out, require_signing=False):
                      "CFBundleShortVersionString": version.split("-")[0].split("+")[0],
                      "CFBundlePackageType": "APPL", "NSHighResolutionCapable": True}
             (app / "Contents/Info.plist").write_bytes(plistlib.dumps(plist))
+            if not keep_symbols:
+                # Keep externally visible Objective-C/C symbols and the engine
+                # intact. Only remove the executable's local symbol table.
+                # This invalidates the old ad-hoc seal, so MUST precede signing.
+                run("xcrun", "strip", "-x", executable_dir / "Vellio")
             sign_app(app, require_signing)
             os.symlink("/Applications", staging / "Applications")
             archive = out / f"{stem}.dmg"
@@ -150,5 +159,7 @@ if __name__ == "__main__":
     parser.add_argument("--pdfium-dir", type=Path, default=ROOT / "target/pdfium-wheel")
     parser.add_argument("--out", type=Path, default=ROOT / "target/release-assets")
     parser.add_argument("--require-signing", action="store_true")
+    parser.add_argument("--keep-symbols", action="store_true", help="Retain macOS local symbol names for diagnostics")
     options = parser.parse_args()
-    package(options.target, options.version, options.pdfium_dir.resolve(), options.out.resolve(), options.require_signing)
+    package(options.target, options.version, options.pdfium_dir.resolve(), options.out.resolve(),
+            options.require_signing, options.keep_symbols)
