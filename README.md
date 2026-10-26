@@ -147,6 +147,12 @@ sh scripts/package_macos.sh --dev
 
 普通 `cargo build` 和 `cargo build --release` 保持原有行为。只有上述发布入口及本机打包脚本加载独立优化配置；首次 release 编译会比开发构建更慢。Linux／Windows 不传入 macOS 链接器参数，实际体积和启动仍须在对应平台验收。
 
+## 项目结构
+
+源码按职责组织为 `app/`、`reader/`、`library/`、`ai/`、`annotations/`、`rendering/`、`formats/epub/`、`pdf/` 和 `desktop/`。桌面首页、设置、聊天以及 PDF 恢复算法各有独立子模块；跨模块回归集中于 `tests/core/`，共享夹具位于 `tests/support/`。`lib.rs` 通过重导出保留既有公开模块路径，CLI、桌面和 Web 调用方式不变。
+
+目录导航、依赖边界、PDF/EPUB 安全约束及新增功能的放置规则见 [项目结构与维护指南](docs/architecture.md)。
+
 ## 验证与本地 app
 
 ```sh

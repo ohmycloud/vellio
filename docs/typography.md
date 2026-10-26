@@ -3,7 +3,7 @@
 Reference: sibling `easyread/easyread/web/css/base.css`, `library.css`,
 `reader.css`, `reading-language.css`, and `settings.css`.
 
-`src/desktop_typography.rs` resolves the reference font stacks against installed
+`src/desktop/typography.rs` resolves the reference font stacks against installed
 font families. Bundled Noto Serif SC remains the default Chinese reading face.
 English serif prose uses Source Serif 4 → Source Serif Pro → Charter → Iowan Old
 Style → Georgia → Noto Serif SC. The system-serif and sans-serif user choices

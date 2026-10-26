@@ -1,28 +1,23 @@
+//! Shared reading engine used by the CLI, native desktop and Web experiment.
+//! Implementation directories follow domain boundaries; the root re-exports
+//! preserve the existing public module paths for callers.
 pub mod ai;
-pub mod annotation_panel;
 pub mod annotations;
-#[cfg(feature = "syntax-highlighting")]
-pub mod code_syntax;
-pub mod epub_pagination;
-pub mod figure_image;
-pub mod fonts;
 pub mod formats;
-pub mod formula;
-pub mod layout;
-pub mod library_home;
-pub mod margin_note;
-pub mod model;
-pub mod navigation;
-pub mod paragraph_edit;
-pub mod paragraph_translation;
 pub mod pdf;
-mod pdf_code;
-pub mod pdf_layout_cache;
-pub mod reading_footnotes;
-pub mod reading_motion;
-pub mod session;
-pub mod settings;
-pub mod store;
-pub mod translation_layout;
-pub mod typst_table;
-pub mod updates;
+
+mod app;
+mod library;
+mod reader;
+mod rendering;
+
+pub use app::{session, settings, updates};
+pub use library::{library_home, store};
+pub use pdf::layout_cache as pdf_layout_cache;
+pub use reader::{
+    annotation_panel, epub_pagination, layout, margin_note, model, navigation, paragraph_edit,
+    paragraph_translation, reading_footnotes, reading_motion, translation_layout,
+};
+#[cfg(feature = "syntax-highlighting")]
+pub use rendering::code_syntax;
+pub use rendering::{figure_image, fonts, formula, typst_table};
